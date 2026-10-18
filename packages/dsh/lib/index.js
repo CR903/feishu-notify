@@ -7,10 +7,11 @@
  * `feishu-notify`（内核 CLI）从用户自己的配置（`~/.config/feishu-notify/config.json`）解析。
  * 这与 opencode 侧、Claude Code 侧共用同一份配置与同一个发送端（本包不自己发 HTTP）。
  *
- * 通知时机（只做「一轮结束」与「需要你决定」两类；其余见 README 的能力表）
- *   session/event → turn/end        →  ✅/❌/⏸/🚫/⚠️ 分档 + 错误详情 + 指标
- *   session/event → approval/asked  →  🔔 需要你决定
- *   session/event → tool/result     →  ❌ 工具失败（默认**关**，config.toolFailures 打开）
+ * 通知时机（三类；其余见 README 的能力表）
+ *   session/event          → turn/end         →  ✅/❌/⏸/🚫/⚠️ 分档 + 错误详情 + 指标
+ *   session/event          → approval/asked   →  🔔 需要你决定
+ *   session/event          → tool/result      →  ❌ 工具失败（默认**关**，config.toolFailures 打开）
+ *   user-questions/request →（阻塞 waterfall）→  ❓ 需要你回答 / 📋 计划待批
  *
  * 事件名与字段一律取实测的 `.d.ts`（DSH 0.2.0-rc.2，逐条 file:line 见
  * `.trellis/tasks/10-18-feishu-notify-dsh/research/cordis-plugin-api.md`）：
@@ -21,15 +22,19 @@
  *   assistant/message.usage  $RT/dsh-session/lib/types/types.d.ts:330 (TokenUsage)
  *   approval/asked           $RT/dsh-user-approval/lib/types/types.d.ts:37（log-only，非阻塞）
  *   tool/result              $RT/dsh-session/lib/types/types.d.ts:374 ({turn, step, message, error?})
+ *   user-questions/request   $RT/dsh-user-questions/lib/types/types.d.ts:145
+ *                            waterfall(this: Scoped<Agent>, request, next) → Promise<AskUserQuestionAnswer>
+ *   AskUserQuestionRequestEvent / AskUserQuestionItem  同文件 :118 / :32（**实测形状见下**）
  *
  * 故意不做的事（都有据可依，见 README）
  *   1. 不注册 `agent/turn-stopping` 当「结束」：它是乐观的，别的 listener 可以 `agent.steer()` 续命
  *      （research §8.2.5），会发出假「已完成」。
- *   2. 不注册「等待人工回答 / 计划待批」：设计里写的是 `session/event → user-question-reply`，
- *      但 `user-question-reply` **不是** SessionEventMap 的成员，它是 `MessageSourceMap` 的成员
- *      （$RT/dsh-user-questions/lib/types/types.d.ts:104，即 `user/message.source.kind`）——
- *      照那个名字注册永远收不到事件；DSH 里真正的「需要你回答」只有阻塞 waterfall
- *      `user-questions/request`。**没有非阻塞钩子就不做**（PRD R2），本轮不硬凑。
+ *   2. 「等待人工回答 / 计划待批」走的是**阻塞 waterfall** `user-questions/request`，**不是**
+ *      `session/event` 的某个成员。设计稿里写的 `session/event → user-question-reply` 是错的：
+ *      那个名字属于 `MessageSourceMap`（$RT/dsh-user-questions/lib/types/types.d.ts:104，即
+ *      `user/message.source.kind`），照它注册**永远收不到事件**，而且它的载荷只有
+ *      `{kind, callId, outcome}`，没有 `questions[]`。
+ *      实现见 `createUserQuestionHandler`：fire-and-forget（绝不 await 发送）+ **必须** `next()` 委派。
  *   3. 不读 `sessionStats`（llmMs/toolMs/ttft）：它只在 `dsh-web-app` bundle 里挂载
  *      （$RT/dsh-web-app/cordis.patch.yml:102-103），非 web profile 没有 → 不假定其存在。
  *   4. 不声明任何 `@deepseek-ai/dsh-*` peerDependencies：兼容性检查会把 dsh-* peer 逐个对运行时核验
@@ -41,7 +46,9 @@
  *   - 发送端每次发送**重新解析**（`FEISHU_NOTIFY_BIN` → `~/.local/bin/feishu-notify` → PATH → 放弃）。
  *     解析不到就**不 spawn**，并写一条 ERROR 级日志。
  *   - 一切失败（找不到发送端 / spawn 报错 / 非零退出 / 超时）**无条件记 ERROR**，不受任何 DEBUG 开关控制。
- *   - 事件处理器整体 try/catch：通知失败绝不影响这一轮对话。
+ *   - 两个事件处理器各一层 try/catch：通知失败绝不影响这一轮对话。
+ *   - `user-questions/request` 是**阻塞 waterfall**：**必须**把 `next()` 的返回值原样返回
+ *     （不调 `next()` = 否决整条链），同时**绝不 await 发送** —— 见 `createUserQuestionHandler`。
  */
 
 import { spawn as nodeSpawn } from 'node:child_process';
@@ -100,6 +107,22 @@ const TURN_END_TITLES = {
 /** 认不出的 `reason.kind`（TurnEndReasonMap 可被别的插件合并扩展）一律落这一档，不崩。 */
 export const UNKNOWN_TURN_END_TITLE = '❓ 未知状态';
 
+/** 「需要你回答」卡片的标题前缀（`user-questions/request`）。 */
+export const QUESTION_TITLE = '❓ 需要你回答';
+/**
+ * 其中一问带 `intent.kind === 'plan-review'` 时的标题前缀。
+ *
+ * 计划待批**仍然是**「需要你回答」，所以保留原前缀、再追加标记 —— 只看标题也分辨得出来。
+ * `intent` 的形状见 `$RT/dsh-user-questions/lib/types/types.d.ts:19-30`：
+ * `{ kind: 'plan-review', approve: string, callId?: ToolCallId }`，其中 `approve` 是
+ * **批准选项的 label**（上游刻意用名字而不是位置，见该文件注释）。
+ */
+export const PLAN_REVIEW_TITLE = '❓ 需要你回答 · 计划待批';
+/** 卡片上最多列几个问题（一轮 `ask_user_question` 通常 1~4 个；超出只报数量，避免长卡片）。 */
+export const QUESTION_MAX_ITEMS = 5;
+/** 单个 `detail` 在卡片上的截断长度（plan-review 的 `detail` 是整篇计划 markdown）。 */
+export const QUESTION_DETAIL_MAX = 200;
+
 // ---------------------------------------------------------------- 小工具
 
 /** 能当对象用的才当对象：事件载荷是外部输入，别信它的形状。 */
@@ -122,6 +145,13 @@ function shorten(text) {
 	const value = asNonEmptyString(text);
 	if (value === '') return '';
 	return value.length > TITLE_MAX ? `${value.slice(0, TITLE_MAX)}…` : value;
+}
+
+/** 折成一行并截断（卡片正文里的 `detail` 可能是整篇 markdown，含换行）。 */
+function flatten(text, max) {
+	const value = asNonEmptyString(text).replace(/\s+/g, ' ');
+	if (value === '') return '';
+	return value.length > max ? `${value.slice(0, max)}…` : value;
 }
 
 function fmtTok(n) {
@@ -184,6 +214,83 @@ function turnEndBody({ kind, reason, rawKind }) {
 	}
 	// completed / blocked / max-tokens：标题已经说清了，不硬凑正文
 	return '';
+}
+
+// ---------------------------------------------------------------- 纯函数：需要你回答 / 计划待批
+
+/**
+ * `user-questions/request` 的载荷 → `{ kind, title, body, questionCount, planReviewCount }`。
+ *
+ * **实测形状**（`$RT/dsh-user-questions/lib/types/types.d.ts`，DSH 0.2.0-rc.2）：
+ * ```ts
+ * interface AskUserQuestionRequestEvent {            // :118
+ *   questions: AskUserQuestionItem[];                // :120
+ *   agent?: Agent; signal?: AbortSignal;
+ *   wait?: { callId: ToolCallId; timed?: boolean };  // :129-134
+ * }
+ * interface AskUserQuestionItem {                    // :32
+ *   id: string; question: string;                    // :34/:36
+ *   detail?: string; header?: string;                // :38/:40
+ *   options?: { label: string; description?: string }[];
+ *   multiSelect?: boolean;
+ *   intent?: { kind: 'plan-review'; approve: string; callId?: ToolCallId };  // :19-30
+ * }
+ * ```
+ * 与 research 的描述一致（它写的是「`questions[]`（含 `question`/`options`/`intent`）、`agent?`、`wait?`」）；
+ * 唯一 research 没写、而 `.d.ts` 有的是 **`wait` 里的 `timed?: boolean`** 与 **`intent.approve`**
+ * （批准选项的 label）—— 卡片把 `approve` 打出来，用户看得懂"哪个按钮算批准"。
+ *
+ * 认不出的 `intent.kind`（上游可继续加）一律当普通问题，不崩。
+ *
+ * @param request `AskUserQuestionRequestEvent`
+ */
+export function classifyUserQuestions(request) {
+	const rawQuestions = asObject(request)?.questions;
+	const questions = (Array.isArray(rawQuestions) ? rawQuestions : []).map((item) => asObject(item)).filter((item) => item !== null);
+	const planReviews = questions.filter((question) => asNonEmptyString(asObject(question.intent)?.kind) === 'plan-review');
+	const kind = planReviews.length > 0 ? 'plan-review' : 'question';
+	return {
+		kind,
+		title: kind === 'plan-review' ? PLAN_REVIEW_TITLE : QUESTION_TITLE,
+		body: userQuestionsBody({ questions, planReviews }),
+		questionCount: questions.length,
+		planReviewCount: planReviews.length,
+	};
+}
+
+function userQuestionsBody({ questions, planReviews }) {
+	const lines = [];
+
+	if (planReviews.length > 0) {
+		const approve = asNonEmptyString(asObject(planReviews[0].intent)?.approve);
+		lines.push(`📋 **计划待批**${approve === '' ? '' : `（批准项：\`${approve}\`）`}`);
+	}
+
+	const shown = questions.slice(0, QUESTION_MAX_ITEMS);
+	shown.forEach((question, index) => {
+		const header = asNonEmptyString(question.header);
+		const text = asNonEmptyString(question.question);
+		lines.push(`**${header === '' ? `问题 ${index + 1}` : header}**: ${text === '' ? '（未提供问题文本）' : text}`);
+
+		const detail = flatten(question.detail, QUESTION_DETAIL_MAX);
+		if (detail !== '') lines.push(detail);
+
+		const labels = (Array.isArray(question.options) ? question.options : [])
+			.map((option) => asNonEmptyString(asObject(option)?.label))
+			.filter((label) => label !== '');
+		if (labels.length > 0) {
+			lines.push(`${question.multiSelect === true ? '选项（可多选）' : '选项'}: ${labels.map((label) => `\`${label}\``).join(' / ')}`);
+		}
+	});
+
+	if (questions.length > shown.length) {
+		lines.push(`… 另有 ${questions.length - shown.length} 个问题（共 ${questions.length} 个）`);
+	}
+	if (lines.length === 0) {
+		// 正文不能为空：内核 CLI 对空正文会打用法并 exit 1
+		lines.push('（事件没带 questions[]）');
+	}
+	return joinLines(lines);
 }
 
 // ---------------------------------------------------------------- 纯函数：指标排版
@@ -408,6 +515,32 @@ export function logError(ctx, message) {
 	}
 }
 
+// ---------------------------------------------------------------- 卡片标题 / 正文（两个处理器共用）
+
+/** `前缀 · 会话名`；没有会话名就只留前缀（不写占位符）。 */
+function cardTitle(prefix, title) {
+	const suffix = shorten(title);
+	return suffix === '' ? prefix : `${prefix} · ${suffix}`;
+}
+
+/** 目录行；拿不到 cwd 就返回空串（调用方按空行过滤掉）。 */
+function cwdLine(session) {
+	const cwd = sessionCwd(session);
+	return cwd === '' ? '' : `**目录**: \`${cwd}\``;
+}
+
+/**
+ * `user-questions/request` 的载荷里没有 session，只有 `agent`（:122）→ 从 `agent.session` 取。
+ * 全部 duck-type：`agent` / `session` 缺失或形状不对都当没有。
+ */
+function agentSession(request) {
+	try {
+		return asObject(asObject(request)?.agent)?.session;
+	} catch {
+		return undefined;
+	}
+}
+
 // ---------------------------------------------------------------- 发送（spawn，fire-and-forget）
 
 /**
@@ -502,6 +635,41 @@ export function createSender({ spawn = nodeSpawn, env = process.env, isExecutabl
 	};
 }
 
+/**
+ * 两个事件处理器共用的「卡片通道」：归一配置 + 一个永不抛的 `sendCard`。
+ *
+ * `sendCard` 同步发起发送（fire-and-forget），**永不抛、永不 await** —— 它是
+ * `session/event`（emit）与 `user-questions/request`（阻塞 waterfall）两条路上的公共出口，
+ * 后者的硬约束就是「绝不让外部进程的往返变成别人的延迟」。
+ */
+function createCardChannel({ ctx = {}, config = undefined, send = undefined, senderOptions = undefined } = {}) {
+	const cfg = normalizeConfig(config);
+	const sender =
+		typeof send === 'function'
+			? send
+			: createSender({ ...(asObject(senderOptions) ?? {}), onError: (message) => logError(ctx, message) });
+
+	function fire(argv) {
+		try {
+			const result = sender(argv);
+			if (result !== null && typeof result === 'object' && typeof result.then === 'function') {
+				result.catch((error) => logError(ctx, `发送端 promise 被拒：${String(error)}`));
+			}
+		} catch (error) {
+			logError(ctx, `发送端抛异常：${String(error)}`);
+		}
+	}
+
+	/** 组标题 + 正文并投递；正文永不为空（内核 CLI 对空正文会打用法并 exit 1）。 */
+	function sendCard(session, prefix, detailLines) {
+		const title = cardTitle(prefix, safeSessionTitle(ctx, session));
+		const body = joinLines(detailLines) || '（没有更多细节）';
+		fire(buildNotifyArgv({ channel: cfg.channel, title, body }));
+	}
+
+	return { cfg, sendCard };
+}
+
 // ---------------------------------------------------------------- 事件处理
 
 function normalizeConfig(config) {
@@ -564,44 +732,12 @@ function sessionId(session) {
  * @param p.send 可注入的发送函数 `(argv) => void`（测试据此断言 argv）
  */
 export function createSessionHandler({ ctx = {}, config = undefined, send = undefined, now = () => Date.now(), senderOptions = undefined } = {}) {
-	const cfg = normalizeConfig(config);
-	const sender =
-		typeof send === 'function'
-			? send
-			: createSender({ ...(asObject(senderOptions) ?? {}), onError: (message) => logError(ctx, message) });
+	const { cfg, sendCard } = createCardChannel({ ctx, config, send, senderOptions });
 
 	// sessionId → { turn, startTime, usages[] }：算耗时与单轮 token 用，turn/end 时清掉
 	const turns = new Map();
 	// sessionId → Map<callId, name>：tool/result 只有 callId，工具名在 tool/call 里
 	const toolCalls = new Map();
-
-	function fire(argv) {
-		try {
-			const result = sender(argv);
-			if (result !== null && typeof result === 'object' && typeof result.then === 'function') {
-				result.catch((error) => logError(ctx, `发送端 promise 被拒：${String(error)}`));
-			}
-		} catch (error) {
-			logError(ctx, `发送端抛异常：${String(error)}`);
-		}
-	}
-
-	function cardTitle(prefix, title) {
-		const suffix = shorten(title);
-		return suffix === '' ? prefix : `${prefix} · ${suffix}`;
-	}
-
-	function cwdLine(session) {
-		const cwd = sessionCwd(session);
-		return cwd === '' ? '' : `**目录**: \`${cwd}\``;
-	}
-
-	function maybeSend(session, prefix, detailLines) {
-		const title = cardTitle(prefix, safeSessionTitle(ctx, session));
-		// 正文不能为空：内核 CLI 对空正文会打用法并 exit 1
-		const body = joinLines(detailLines) || '（没有更多细节）';
-		fire(buildNotifyArgv({ channel: cfg.channel, title, body }));
-	}
 
 	// ---------------- 一轮结束
 
@@ -640,7 +776,7 @@ export function createSessionHandler({ ctx = {}, config = undefined, send = unde
 		const endedAt = typeof event?.time === 'number' ? event.time : null;
 		const durationMs = startedAt !== null && endedAt !== null ? endedAt - startedAt : undefined;
 
-		maybeSend(session, classified.title, [
+		sendCard(session, classified.title, [
 			classified.body,
 			cwdLine(session),
 			'',
@@ -657,7 +793,7 @@ export function createSessionHandler({ ctx = {}, config = undefined, send = unde
 
 	function onApprovalAsked(session, event) {
 		const data = asObject(event?.data) ?? {};
-		maybeSend(session, '🔔 需要你决定', [
+		sendCard(session, '🔔 需要你决定', [
 			`**工具**: \`${asNonEmptyString(data.toolName) || '（未提供）'}\``,
 			asNonEmptyString(data.reason) ? `**说明**: ${asNonEmptyString(data.reason)}` : '',
 			cwdLine(session),
@@ -696,7 +832,7 @@ export function createSessionHandler({ ctx = {}, config = undefined, send = unde
 			name = calls?.get(callId) ?? '';
 			calls?.delete(callId);
 		}
-		maybeSend(session, '❌ 工具失败', [
+		sendCard(session, '❌ 工具失败', [
 			name !== '' ? `**工具**: \`${name}\`` : '',
 			asNonEmptyString(failure?.name) ? `**错误**: \`${asNonEmptyString(failure.name)}\`${asNonEmptyString(failure.code) ? `（${asNonEmptyString(failure.code)}）` : ''}` : '',
 			asNonEmptyString(failure?.reason) ? `**说明**: ${asNonEmptyString(failure.reason)}` : '',
@@ -738,7 +874,60 @@ export function createSessionHandler({ ctx = {}, config = undefined, send = unde
 	};
 }
 
+// ---------------------------------------------------------------- 需要你回答 / 计划待批（阻塞 waterfall）
+
+/**
+ * 造一个 `(request, next) => Promise<…>` 处理器，注册给 **waterfall** `user-questions/request`
+ * （`$RT/dsh-user-questions/lib/types/types.d.ts:145`）。
+ *
+ * 两件事，顺序固定：
+ *
+ * 1. **fire-and-forget 投递**：`sendCard` 同步发起 `spawn`，**绝不 await**。
+ *    这是 waterfall 阻塞点：在这里 `await` 一次外部进程往返（还可能撞上 10s 超时）就等于
+ *    给「用户看到问题弹窗」和「模型拿到答案」加上我们的网络延迟。通知插件没有这个资格。
+ * 2. **透明委派 `next()`**：cordis 的 waterfall 里 **不调 `next()` = 否决整条链**
+ *    （`$RT/cordis/lib/index.js:317-331`：*"a listener that does not call `next()` vetoes the rest
+ *    of the chain, including the built-in behavior"*）。`ask()` 会 `await` 这条链的结果
+ *    （`$RT/dsh-user-questions/lib/index.js:681`）—— 所以**必须**把 `next()` 的 promise 原样返回，
+ *    否则真正的答题 UI 再也拿不到这个问题，模型会收到一个 `undefined`「答案」。
+ *
+ * 于是「不阻塞」的准确含义是：**不 await 发送**；而返回值仍然是 `next()` 的 promise
+ * （waterfall 协议要求，不是我们在等我们的进程）。测试用「挂起的发送 promise」证明这一点：
+ * handler 同步返回、`next()` 已同步调用、返回值**就是** `next()` 那个 promise。
+ */
+export function createUserQuestionHandler({ ctx = {}, config = undefined, send = undefined, senderOptions = undefined } = {}) {
+	const { sendCard } = createCardChannel({ ctx, config, send, senderOptions });
+
+	return function handleUserQuestionRequest(request, next) {
+		try {
+			const classified = classifyUserQuestions(request);
+			const session = agentSession(request);
+			sendCard(session, classified.title, [classified.body, cwdLine(session)]);
+		} catch (error) {
+			// 通知失败绝不影响这一轮；但也不能静默
+			logError(ctx, `user-questions/request 通知失败：${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+		}
+
+		// 委派必须在 try 之外：`next()` 的异常属于真实答题链，吞掉它等于伪造一个"答案"。
+		return typeof next === 'function' ? next() : undefined;
+	};
+}
+
 // ---------------------------------------------------------------- 插件入口
+
+/**
+ * 注册一个事件处理器；**永不抛**（`apply` 抛会让这条 entry 的 fiber 变 FAILED，见下）。
+ *
+ * 每个事件各一层 try/catch：注册 `session/event` 失败不该连带把 `user-questions/request`
+ * 也一起丢掉 —— 两个时机的可用性互相独立，日志里也按事件名分得清。
+ */
+function registerHandler(ctx, config, event, factory) {
+	try {
+		ctx.on(event, factory({ ctx, config })); // 返回的 disposer 随 fiber 卸载自动注销
+	} catch (error) {
+		logError(ctx, `插件加载失败（${event}）：${error instanceof Error ? (error.stack ?? error.message) : String(error)}——该时机的通知将不可用`);
+	}
+}
 
 /**
  * Cordis 插件入口（`Plugin.Object`：`apply(ctx, config)`）。
@@ -747,10 +936,6 @@ export function createSessionHandler({ ctx = {}, config = undefined, send = unde
  * （`$RT/cordis/lib/types/fiber.d.ts:60-73`）。通知插件哪有资格拦下别人的启动。
  */
 export function apply(ctx, config) {
-	try {
-		const handler = createSessionHandler({ ctx, config });
-		ctx.on('session/event', handler); // 返回的 disposer 随 fiber 卸载自动注销
-	} catch (error) {
-		logError(ctx, `插件加载失败（本轮起将没有通知）：${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
-	}
+	registerHandler(ctx, config, 'session/event', createSessionHandler);
+	registerHandler(ctx, config, 'user-questions/request', createUserQuestionHandler);
 }

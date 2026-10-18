@@ -240,7 +240,7 @@ test('端到端（不启 DSH）：apply 注册的 listener 真把 argv 送进了
 		apply(ctx, { channel: 'dsh' });
 		assert.deepEqual(
 			registered.map((entry) => entry.event),
-			['session/event'],
+			['session/event', 'user-questions/request'],
 		);
 
 		registered[0].listener(
@@ -254,6 +254,69 @@ test('端到端（不启 DSH）：apply 注册的 listener 真把 argv 送进了
 		assert.equal(argv[5], '✅ 任务完成 · 真实 spawn');
 		assert.match(argv[6], /\*\*目录\*\*: `\/tmp\/proj`/);
 		assert.equal(logs.length, 0, `不该有 ERROR 日志（收到：${logs.join(' | ')}）`);
+	} finally {
+		if (previousBin === undefined) delete process.env[NOTIFY_BIN_ENV];
+		else process.env[NOTIFY_BIN_ENV] = previousBin;
+		if (previousRecord === undefined) delete process.env.FEISHU_STUB_RECORD;
+		else process.env.FEISHU_STUB_RECORD = previousRecord;
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('端到端（不启 DSH）：user-questions/request 也真把 argv 送进进程，且 handler **同步**返回并已委派', async () => {
+	const dir = mkdtempSync(join(tmpdir(), 'dsh-feishu-notify-q-'));
+	const bin = join(dir, 'feishu-notify');
+	const record = join(dir, 'argv.txt');
+	writeFileSync(bin, STUB, 'utf8');
+	chmodSync(bin, 0o755);
+
+	const registered = [];
+	const logs = [];
+	const ctx = {
+		on(event, listener) {
+			registered.push({ event, listener });
+			return () => {};
+		},
+		logger: { error: (m) => logs.push(String(m)), warn() {}, info() {}, debug() {} },
+		sessionTitle: { get: () => ({ title: '真实 spawn' }) },
+	};
+
+	const previousBin = process.env[NOTIFY_BIN_ENV];
+	const previousRecord = process.env.FEISHU_STUB_RECORD;
+	process.env[NOTIFY_BIN_ENV] = bin;
+	process.env.FEISHU_STUB_RECORD = record;
+	try {
+		apply(ctx, { channel: 'dsh' });
+		const listener = registered.find((entry) => entry.event === 'user-questions/request')?.listener;
+		assert.equal(typeof listener, 'function', 'user-questions/request 必须注册');
+
+		let nextCalls = 0;
+		const answer = { answers: [{ id: 'q1', selected: ['Approve'] }] };
+		const returned = listener(
+			{
+				questions: [{ id: 'q1', header: '计划', question: '批准吗？', options: [{ label: 'Approve' }], intent: { kind: 'plan-review', approve: 'Approve' } }],
+				agent: { session: { id: 'ses_q', header: { cwd: '/tmp/proj' }, requestContext: () => undefined } },
+			},
+			() => {
+				nextCalls += 1;
+				return Promise.resolve(answer);
+			},
+		);
+
+		// 阻塞 waterfall 的硬约束：同步段结束时通知已投出、控制权已交出、返回值就是 next() 的 promise
+		assert.equal(nextCalls, 1, 'next() 必须同步委派（不调 = 否决整条链）');
+		assert.equal(logs.length, 0, `不该有 ERROR 日志（收到：${logs.join(' | ')}）`);
+
+		assert.ok(await waitForFile(record), '子进程没有读到已关闭的 stdin（否则这里会超时）');
+		const argv = readFileSync(record, 'utf8').split('\n').filter((line) => line !== '');
+		// 正文是多行的（每行一个 argv 元素）—— 拼回来再断言，别只看到第一行
+		const body = argv.slice(6).join('\n');
+		assert.deepEqual(argv.slice(0, 6), ['--source', 'dsh', '--channel', 'dsh', '--title', '❓ 需要你回答 · 计划待批 · 真实 spawn']);
+		assert.match(body, /📋 \*\*计划待批\*\*（批准项：`Approve`）/);
+		assert.match(body, /\*\*计划\*\*: 批准吗？/);
+		assert.match(body, /选项: `Approve`/);
+		assert.match(body, /\*\*目录\*\*: `\/tmp\/proj`/);
+		assert.equal(await returned, answer, '委派结果原样返回');
 	} finally {
 		if (previousBin === undefined) delete process.env[NOTIFY_BIN_ENV];
 		else process.env[NOTIFY_BIN_ENV] = previousBin;

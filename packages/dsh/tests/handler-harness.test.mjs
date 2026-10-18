@@ -15,14 +15,16 @@ import { apply, createSessionHandler, DEFAULT_CHANNEL, NOTIFY_SOURCE } from '../
  * 注册到别处 = 自创事件名（永远收不到），本测试专门拦住这种事。
  */
 const RESEARCH_EVENT_NAMES = new Set([
-	// $RT/dsh-session/lib/types/index.d.ts:64 —— 我们唯一注册的那个
+	// $RT/dsh-session/lib/types/index.d.ts:64 —— 一轮结束/审批/工具失败都从它来
 	'session/event',
+	// $RT/dsh-user-questions/lib/types/types.d.ts:145 —— 「需要你回答 / 计划待批」的**阻塞 waterfall**
+	// （不是 SessionEventMap 成员；设计稿里写的 `user-question-reply` 属于 MessageSourceMap，收不到）
+	'user-questions/request',
 	// 明确**不注册**但确实存在的候选（留着是为了让"允许集合"如实反映 research）
 	'agent/turn-stopping', // $RT/dsh-agent/lib/types/runtime-types.d.ts:387（乐观结束：别的 listener 可 steer 续命）
 	'agent/created', // $RT/dsh-agent/lib/types/runtime-types.d.ts:227
 	'session/created', // $RT/dsh-session/lib/types/index.d.ts:42
-	'approval/request', // $RT/dsh-user-approval/lib/types/types.d.ts:81（阻塞 waterfall）
-	'user-questions/request', // $RT/dsh-user-questions/lib/types/types.d.ts:145（阻塞 waterfall）
+	'approval/request', // $RT/dsh-user-approval/lib/types/types.d.ts:81（阻塞 waterfall；我们走非阻塞的 approval/asked）
 	'tools/result', // $RT/dsh-tools/lib/types/index.d.ts:92
 	'session-telemetry/record', // $RT/dsh-session-telemetry/lib/types/index.d.ts:41
 ]);
@@ -61,11 +63,12 @@ function makeSession({ id = 'ses_abc', cwd = '/Users/x/project', model = { provi
 
 // ---------------------------------------------------------------- 注册了哪些事件
 
-test('注册的事件名只有 session/event，且都在 research 的允许集合里', () => {
+test('注册的事件名只有这两个，且都在 research 的允许集合里', () => {
 	const { ctx, registered } = makeCtx();
 	apply(ctx, { channel: 'dsh' });
 
-	assert.deepEqual(registered, ['session/event']);
+	// 每个时机一个钩子：session/event（非阻塞 emit）+ user-questions/request（阻塞 waterfall）
+	assert.deepEqual(registered, ['session/event', 'user-questions/request']);
 	for (const event of registered) {
 		assert.ok(RESEARCH_EVENT_NAMES.has(event), `自创事件名（research 里没有）：${event}`);
 	}
@@ -84,8 +87,10 @@ test('apply 永不抛：ctx.on 炸了也只记日志（否则 fiber 变 FAILED�
 			{ channel: 'dsh' },
 		);
 	});
-	assert.equal(logs.length, 1);
-	assert.match(logs[0], /插件加载失败/);
+	// 两个时机各自一层 try/catch：一个注册失败不连累另一个，日志按事件名分得清
+	assert.equal(logs.length, 2);
+	assert.match(logs[0], /插件加载失败（session\/event）/);
+	assert.match(logs[1], /插件加载失败（user-questions\/request）/);
 });
 
 test('apply 在 ctx 没有 logger 时退到 stderr，仍然不抛', () => {
@@ -106,7 +111,7 @@ test('apply 在 ctx 没有 logger 时退到 stderr，仍然不抛', () => {
 	} finally {
 		console.error = original;
 	}
-	assert.equal(lines.length, 1, '没有 ctx.logger 时也必须留下证据（不是静默）');
+	assert.equal(lines.length, 2, '没有 ctx.logger 时也必须留下证据（不是静默）');
 	assert.match(lines[0], /插件加载失败/);
 });
 

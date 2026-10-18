@@ -105,10 +105,79 @@ export declare function createSessionHandler(options?: {
 	config?: { channel?: string; toolFailures?: boolean };
 	send?: (argv: string[]) => unknown;
 	now?: () => number;
+	/** 透传给 `createSender`（测试用来注入 spawn / env） */
+	senderOptions?: Record<string, unknown>;
 }): (session: unknown, event: unknown) => void;
 
 export declare function joinLines(lines: readonly (string | undefined)[]): string;
 export declare function isExecutableFile(path: string, deps?: { stat?: unknown; access?: unknown }): boolean;
+
+// ---------------------------------------------------- 需要你回答 / 计划待批（阻塞 waterfall）
+
+/**
+ * DSH 那边 `AskUserQuestionItem` 的最小子集（`$RT/dsh-user-questions/lib/types/types.d.ts:32`）。
+ * 只列我们真读的字段 —— 其余（`id` / `signal` / `wait`）我们不用，故意不进类型。
+ */
+export interface DshUserQuestionItem {
+	/** 问题正文（`.d.ts:36`）。 */
+	question?: string;
+	/** 短标题 / 分组名（`.d.ts:40`）；没有就用「问题 N」。 */
+	header?: string;
+	/** 补充细节（`.d.ts:38`）；plan-review 时是整篇计划 markdown，卡片上会截断。 */
+	detail?: string;
+	/** 可选项（`.d.ts:42`），只取 `label`。 */
+	options?: readonly { label?: string }[];
+	/** 是否多选（`.d.ts:44`）。 */
+	multiSelect?: boolean;
+	/** 表现意图（`.d.ts:46`）；`kind === 'plan-review'` 即「计划待批」，`approve` 是批准项的 label。 */
+	intent?: { kind?: string; approve?: string };
+}
+
+/** `user-questions/request` 的载荷（`AskUserQuestionRequestEvent`，`.d.ts:118`）。 */
+export interface DshUserQuestionRequest {
+	questions?: readonly DshUserQuestionItem[];
+	/** 只有它带 session（`request.agent.session`），用于取会话名与 cwd。 */
+	agent?: { session?: unknown };
+}
+
+export interface UserQuestionsClassification {
+	/** `'plan-review'` 只要有一问声明了该 intent；否则 `'question'`。 */
+	kind: 'question' | 'plan-review';
+	/** 卡片标题前缀（plan-review 会追加 `· 计划待批`，仍以 `❓ 需要你回答` 开头）。 */
+	title: string;
+	/** 正文（永不为空）。 */
+	body: string;
+	/** 载荷里**形状合法**（是对象）的问题数。 */
+	questionCount: number;
+	/** 其中 plan-review 的数量。 */
+	planReviewCount: number;
+}
+
+/**
+ * `user-questions/request` 的 request → 卡片内容。畸形载荷不抛。
+ *
+ * 注意 `intent` 认不出的 `kind` 一律当普通问题（上游可以继续加 intent）。
+ */
+export declare function classifyUserQuestions(request: DshUserQuestionRequest | undefined | null): UserQuestionsClassification;
+
+/**
+ * 造 `(request, next) => Promise<…>`，注册给**阻塞 waterfall** `user-questions/request`。
+ *
+ * 保证：通知 fire-and-forget（**不 await** 发送）；返回值**就是** `next()` 的 promise
+ * —— waterfall 里不调 `next()` 会否决整条链，答题 UI 会拿不到问题。
+ */
+export declare function createUserQuestionHandler(options?: {
+	ctx?: unknown;
+	config?: { channel?: string; toolFailures?: boolean };
+	send?: (argv: string[]) => unknown;
+	/** 透传给 `createSender`（测试用来注入 spawn / env） */
+	senderOptions?: Record<string, unknown>;
+}): (request: DshUserQuestionRequest | undefined, next?: unknown) => unknown;
+
+export declare const QUESTION_TITLE: '❓ 需要你回答';
+export declare const PLAN_REVIEW_TITLE: '❓ 需要你回答 · 计划待批';
+export declare const QUESTION_MAX_ITEMS: number;
+export declare const QUESTION_DETAIL_MAX: number;
 
 export declare const DEFAULT_CHANNEL: 'dsh';
 export declare const NOTIFY_SOURCE: 'dsh';
