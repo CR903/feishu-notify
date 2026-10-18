@@ -121,9 +121,19 @@ export function sendPayload({
   if (result.error) {
     const code = result.error.code;
     if (code === "ENOENT") return failed(`找不到 curl（可设置 FEISHU_NOTIFY_CURL 指定路径）`, { elapsedMs });
-    if (code === "ETIMEDOUT" || result.signal) return failed(`发送超时（${timeoutMs}ms 内没有响应，已中止）`, { elapsedMs });
-    return failed(`调用 curl 失败：${result.error.message}`, { elapsedMs });
   }
+
+  // G5：`signal` 或 `ETIMEDOUT` 都归到“发送超时”。**不再要求 error 存在** ——
+  // 子进程被外部信号杀死（stub 自杀 / 被 kill）时 spawnSync 可能只给 signal、不给 error，
+  // 旧写法会掉进下面的 httpCode===0 分支，文案退化成“没有拿到 HTTP 状态码”。
+  const signal = result.signal ?? result.error?.signal;
+  const code = result.error?.code;
+  if (code === "ETIMEDOUT" || signal) {
+    const why = signal ? `，信号 ${signal}` : "";
+    return failed(`发送超时（${timeoutMs}ms 内没有响应，已中止${why}）`, { elapsedMs });
+  }
+
+  if (result.error) return failed(`调用 curl 失败：${result.error.message}`, { elapsedMs });
 
   const stdout = result.stdout ?? "";
   const match = /(\d{3})\s*$/.exec(stdout);

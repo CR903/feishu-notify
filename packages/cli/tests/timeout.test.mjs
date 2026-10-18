@@ -186,11 +186,28 @@ describe("sendPayload：生效的超时确实传给了 curl 子进程（spawn �
 		assert.equal(timedOut.httpCode, 0);
 		assert.match(timedOut.message, /发送超时/);
 		assert.match(timedOut.message, /77ms/, `文案要报生效值：${timedOut.message}`);
+		assert.match(timedOut.message, /信号 SIGTERM/, `超时文案要带终止信号名：${timedOut.message}`);
 
 		const denied = sendPayload({ webhook: WEBHOOK, payload: "{}", spawn: () => ({ error: { code: "EACCES", message: "spawnSync curl EACCES" } }) });
 		assert.equal(denied.ok, false);
 		assert.match(denied.message, /调用 curl 失败/);
 		assert.doesNotMatch(denied.message, /发送超时/, "别的 spawn 失败不得被算成超时");
+	});
+
+	it("G5：只有 signal、**没有 error 字段**（子进程自杀/被 kill）→ 也走超时分支，不是「没有拿到 HTTP 状态码」", () => {
+		const killed = sendPayload({
+			webhook: WEBHOOK,
+			payload: "{}",
+			env: { [TIMEOUT_ENV]: "88" },
+			// 关键：没有 error，只有 signal —— 旧写法会掉进 httpCode===0 分支
+			spawn: () => ({ status: null, signal: "SIGKILL", stdout: "", stderr: "" }),
+		});
+		assert.equal(killed.ok, false);
+		assert.equal(killed.httpCode, 0);
+		assert.match(killed.message, /发送超时/, `signal 无 error 时也必须走超时分支：${killed.message}`);
+		assert.match(killed.message, /88ms/, `文案要报生效值：${killed.message}`);
+		assert.match(killed.message, /信号 SIGKILL/, `文案要带终止信号名：${killed.message}`);
+		assert.doesNotMatch(killed.message, /没有拿到 HTTP 状态码/, "不得退化成「没有拿到 HTTP 状态码」");
 	});
 });
 
@@ -221,7 +238,7 @@ describe("端到端：同一套接线 + 同一份会慢 300ms 的替身，唯一
 		const result = runCli(fixture, ["doctor"]);
 
 		assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
-		assert.match(result.stdout, /✗ default\s+发送超时（50ms 内没有响应，已中止）/, `应走超时分支：${result.stdout}`);
+		assert.match(result.stdout, /✗ default\s+发送超时（50ms 内没有响应，已中止，信号 SIGTERM）/, `应走超时分支：${result.stdout}`);
 		assert.match(result.stdout, /0\/1 通/);
 		assert.ok(!result.stdout.includes("test-timeout"), "明文 webhook 不许出现在输出里");
 	});
@@ -251,7 +268,7 @@ describe("端到端：同一套接线 + 同一份会慢 300ms 的替身，唯一
 
 		assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
 		assert.match(result.stderr, /未写入任何配置/);
-		assert.match(result.stderr, new RegExp(`发送超时（${MIN_CURL_TIMEOUT_MS}ms 内没有响应，已中止）`), `0 应被钳到下限 ${MIN_CURL_TIMEOUT_MS}ms：${result.stderr}`);
+		assert.match(result.stderr, new RegExp(`发送超时（${MIN_CURL_TIMEOUT_MS}ms 内没有响应，已中止，信号 SIGTERM）`), `0 应被钳到下限 ${MIN_CURL_TIMEOUT_MS}ms：${result.stderr}`);
 		assert.equal(lstatSync(fixture.config, { throwIfNoEntry: false }), undefined, "验证失败不得留下配置文件");
 	});
 });
