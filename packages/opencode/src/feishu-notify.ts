@@ -337,19 +337,31 @@ export function buildNotifyArgs({
 }
 
 /**
- * "配置里没有这个 channel" 的 stderr 特征。
+ * "配置里没有这个 channel" 的 stderr 判据。
  *
- * 发送端会把解析器（`feishu-notify-cli resolve`）的 ConfigError 原文透到 stderr，形如：
+ * **优先**匹配 CLI 输出（F/G3）的机器可读标记：
+ *   reason=channel-not-found channel=<name>
+ * 这是稳定的、可 grep 的契约（`bin/feishu-notify-cli` 在 ConfigError 的
+ * `reason === "channel-not-found"` 且带 `.channel` 时追加到 stderr），不随中文文案漂移。
+ *
+ * **fallback** 保留旧的文案形状匹配，兼容旧版 CLI。发送端会把解析器 stderr 原文透传，形如：
  *   配置里没有名为 "opencode" 的 channel（已有：default）
- * 这里按**形状**匹配，并把捕获到的名字与本次请求的名字核对 —— 否则别的 channel 名不一致的
- * 消息（将来的文案变化、doctor 的同类消息）会误触发一次没意义的重试。
+ * 两条路径都把捕获到的名字与本次请求的名字核对 —— 否则别的 channel 名不一致的消息
+ * （将来的文案变化、doctor 的同类消息）会误触发一次没意义的重试。
  *
- * 判据刻意定得很窄：只有"退出码 2 **且** stderr 命中这条形状"才降级。
+ * 判据刻意定得很窄：只有"退出码 2 **且** stderr 命中其一"才降级。
  * 缺配置 / 坏 JSON / 非 https / 网络失败都不降级（降级也解决不了，只会多发一次）。
  */
 export function isChannelNotFoundStderr(stderr: string, channel: string): boolean {
-  const match = /没有名为\s*"([^"]+)"\s*的\s*channel/.exec(typeof stderr === 'string' ? stderr : '');
-  return match !== null && match[1] === channel;
+  const text = typeof stderr === 'string' ? stderr : '';
+
+  // ① 机器可读标记（新版 CLI）
+  const machine = /(?:^|\n)reason=channel-not-found\s+channel=(\S+)/.exec(text);
+  if (machine !== null) return machine[1] === channel;
+
+  // ② 旧文案（旧版 CLI 的 fallback）
+  const legacy = /没有名为\s*"([^"]+)"\s*的\s*channel/.exec(text);
+  return legacy !== null && legacy[1] === channel;
 }
 
 export interface NotifyRunResult {

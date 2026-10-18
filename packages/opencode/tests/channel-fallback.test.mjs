@@ -136,6 +136,28 @@ describe('buildNotifyArgs：只传名字 / 什么都不传，永不传地址', (
 // ---------------------------------------------------------------- 降级判据
 
 describe('isChannelNotFoundStderr：判据刻意很窄', () => {
+	it('机器可读标记（新版 CLI）→ 命中，且按 channel 名核对', () => {
+		const stderr = '❌ 未能解析 feishu webhook\nreason=channel-not-found channel=opencode\n   解析器是 Node 脚本…';
+		assert.equal(isChannelNotFoundStderr(stderr, 'opencode'), true);
+		assert.equal(isChannelNotFoundStderr(stderr, 'team'), false, '名字不匹配不得命中');
+		assert.equal(isChannelNotFoundStderr('reason=channel-not-found channel=', 'opencode'), false, '空名字不得命中');
+	});
+
+	it('机器标记优先于旧文案：两者矛盾时以标记为准', () => {
+		// 标记说 team，旧文案说 opencode → 以标记为准（false）
+		const markerTeam = `reason=channel-not-found channel=team\n配置里没有名为 "opencode" 的 channel（已有：default）`;
+		assert.equal(isChannelNotFoundStderr(markerTeam, 'opencode'), false);
+		// 反过来：标记说 opencode，旧文案说 team → true
+		const markerOc = `配置里没有名为 "team" 的 channel（已有：default）\nreason=channel-not-found channel=opencode`;
+		assert.equal(isChannelNotFoundStderr(markerOc, 'opencode'), true);
+	});
+
+	it('旧文案（旧版 CLI，无标记）作为 fallback → 命中（兼容路径）', () => {
+		const legacy = channelNotFoundStderr('opencode', 'default');
+		assert.ok(!legacy.includes('reason=channel-not-found'), '这份 fixture 刻意不含机器标记');
+		assert.equal(isChannelNotFoundStderr(legacy, 'opencode'), true);
+	});
+
 	it('真实文案（照抄发送端 stderr）→ 命中', () => {
 		assert.equal(isChannelNotFoundStderr(channelNotFoundStderr('opencode', 'default'), 'opencode'), true);
 	});
@@ -169,9 +191,10 @@ describe('isChannelNotFoundStderr：判据刻意很窄', () => {
 		});
 
 		assert.equal(result.status, 2, `缺 channel 必须 exit 2：\n${result.stdout}\n${result.stderr}`);
+		assert.match(result.stderr, /^reason=channel-not-found channel=opencode$/m, `真 CLI 必须输出机器可读标记：\n${result.stderr}`);
 		assert.equal(isChannelNotFoundStderr(result.stderr, 'opencode'), true, `真实 stderr 未被判据接受：\n${result.stderr}`);
 		assert.equal(isChannelNotFoundStderr(result.stderr, 'claude'), false, '换个名字就不该命中');
-		assert.match(result.stderr, /没有名为 "opencode" 的 channel/, '真实文案的形状（判据依赖它，变了要一起改）');
+		assert.match(result.stderr, /没有名为 "opencode" 的 channel/, '旧文案的形状仍在（fallback 依赖它）');
 	});
 });
 

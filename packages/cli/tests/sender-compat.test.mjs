@@ -109,12 +109,14 @@ describe("发送端：解析优先级（Step 2）", () => {
 		assert.match(result.stderr, /<REDACTED>/);
 	});
 
-	it("--channel 指向不存在的 channel → exit 2（引导语来自解析器）", () => {
+	it("--channel 指向不存在的 channel → exit 2（引导语来自解析器）+ 机器可读标记", () => {
 		resetStubLog(STUB_LOG);
 		const result = runSender(["--channel", "ghost", "--text", "hi"]);
 		assert.equal(result.status, 2, `${result.stdout}\n${result.stderr}`);
 		assert.match(result.stderr, /没有名为 "ghost" 的 channel/);
 		assert.match(result.stderr, /default, opencode/);
+		// F/G3：CLI 追加的机器可读标记（发送端 stderr 透传）—— 插件优先靠它判"channel 不存在"
+		assert.match(result.stderr, /^reason=channel-not-found channel=ghost$/m, `缺机器可读标记：\n${result.stderr}`);
 		assert.deepEqual(urlsCalled(), []);
 	});
 

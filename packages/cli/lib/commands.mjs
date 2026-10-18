@@ -587,7 +587,7 @@ export async function commandDoctor(argv, { env: baseEnv = process.env, io: rawI
 		if (!Object.prototype.hasOwnProperty.call(config.channels, options.channel)) {
 			throw new ConfigError(
 				`配置里没有名为 "${options.channel}" 的 channel（已有：${names.join(", ")}）\n  配置文件：${path}`,
-				{ reason: "channel-not-found" },
+				{ reason: "channel-not-found", channel: options.channel },
 			);
 		}
 		names = [options.channel];

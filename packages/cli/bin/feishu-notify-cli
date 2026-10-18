@@ -109,6 +109,12 @@ try {
 } catch (error) {
 	if (error instanceof ConfigError || error instanceof CommandError) {
 		console.error(error.message);
+		// F：机器可读标记。中文文案会漂移，插件不该靠它判"channel 不存在"。
+		// 只对**点名了 channel 的**路径输出（`resolve --channel` / `doctor --channel`）；
+		// `channel remove/set-active` 这类配置子命令不带 .channel，故不输出 —— 语义不扩散。
+		if (error.reason === "channel-not-found" && typeof error.channel === "string" && error.channel !== "") {
+			console.error(`reason=channel-not-found channel=${error.channel}`);
+		}
 		process.exitCode = error.exitCode;
 	} else {
 		console.error(`内部错误：${error?.stack ?? error}`);

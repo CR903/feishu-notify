@@ -41,11 +41,14 @@ export const INIT_GUIDANCE = "npx feishu-notify-cli init";
 
 /** 配置域错误：一律 exitCode 2（配置缺失/坏/不可用 —— 都是“去修配置”） */
 export class ConfigError extends Error {
-	constructor(message, { exitCode = 2, reason = "config" } = {}) {
+	constructor(message, { exitCode = 2, reason = "config", channel = undefined } = {}) {
 		super(message);
 		this.name = "ConfigError";
 		this.exitCode = exitCode;
 		this.reason = reason;
+		/** 触发出错的 channel 名（仅 `--channel <name>` 这类“点名”路径会带）；
+		 *  bin 用它输出机器可读标记 `reason=channel-not-found channel=<name>`（F） */
+		this.channel = channel;
 	}
 }
 
@@ -310,7 +313,7 @@ function pickChannel(loaded, name, { via }) {
 		throw new ConfigError(
 			`配置里没有名为 "${name}" 的 channel（已有：${available.length > 0 ? available.join(", ") : "无"}）\n` +
 				`  配置文件：${loaded.path}\n  可用 npx feishu-notify-cli channel list 查看。`,
-			{ reason: "channel-not-found" },
+			{ reason: "channel-not-found", channel: name },
 		);
 	}
 	return { webhook: validateWebhook(entry.webhook, { source: `${via} "${name}"` }), channelName: name };

@@ -557,6 +557,8 @@ describe("doctor", () => {
 		const bad = runCli(["doctor", "--channel", "ghost"], { env: envFor({ config }) });
 		assert.equal(bad.status, 2);
 		assert.match(bad.stderr, /没有名为 "ghost" 的 channel/);
+		// F/G3：doctor --channel 也输出机器可读标记（与 resolve --channel 同一套）
+		assert.match(bad.stderr, /^reason=channel-not-found channel=ghost$/m, `缺机器可读标记：\n${bad.stderr}`);
 	});
 
 	it("--json：结构化结果 + 掩码；坏 JSON 时 exit 2 且不改文件", () => {
