@@ -17,7 +17,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, describe, it } from "node:test";
 
-import { HOOK_MARKER, findHookTokens, gitTopLevel, isAllowedToken, packFileList, scanRepository } from "../lib/secret-scan.mjs";
+import { HOOK_MARKER, findCredentials, findHookTokens, gitTopLevel, isAllowedCredential, isAllowedToken, packFileList, scanRepository } from "../lib/secret-scan.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), ".."); // = packages/cli（本包根）
 const MONO_ROOT = gitTopLevel(REPO_ROOT) ?? REPO_ROOT; // = 仓库根
@@ -69,6 +69,79 @@ describe("token 识别", () => {
 		for (const token of [FAKE_REAL_TOKEN, "62ff6eb0-79c9-4b29-af48-000000000000", "abc123def456"]) {
 			assert.ok(!isAllowedToken(token), `${token} 不应被当作样例`);
 		}
+	});
+});
+
+// ---------------------------------------------------------------- 通用凭据形态（E）
+
+/**
+ * 运行期拼接：这些假凭据**绝不能以完整字面量**出现在本文件里 ——
+ * 本文件本身在闸门的 git 索引扫描范围内，完整字面量会让"真实仓库必须干净"那条用例失败。
+ * 与源码里的 HOOK_MARKER 拆分同理。
+ */
+const j = (...parts) => parts.join("");
+
+/** 每条形态一个泵入用例（id 必须与 secret-scan.mjs 的 CREDENTIAL_PATTERNS 对齐） */
+const CRED_CASES = [
+	{ id: "openai-key", token: j("sk-", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4") },
+	{ id: "anthropic-key", token: j("sk-ant-", "api03-", "A1b2C3d4E5f6G7h8I9j0K1l2") },
+	{ id: "github-token", token: j("ghp_", "0123456789abcdefghijklmnopqrstuvwxyz") },
+	{ id: "github-pat", token: j("github_pat_", "0123456789_abcdefghijklmn") },
+	{ id: "aws-access-key-id", token: j("AKIA", "QWERTYUIOPASDFGH") },
+	{ id: "google-api-key", token: j("AIza", "Sy0123456789abcdefghijklmnopqrstuvw") },
+	{ id: "slack-token", token: j("xoxb-", "0123456789-abcdefghijklmnop") },
+	{ id: "stripe-live-key", token: j("sk_live_", "0123456789abcdefghijklmn") },
+	{ id: "bearer-token", token: j("Bearer ", "0123456789abcdefghijklmn") },
+	{ id: "private-key", token: j("-----BEGIN ", "PRIVATE KEY-----") },
+];
+
+describe("通用凭据形态（E）：识别 + 反例 + 白名单", () => {
+	it("每种形态都能被识别，且返回值里根本没有命中串", () => {
+		for (const { id, token } of CRED_CASES) {
+			const hits = findCredentials(`const key = "${token}";`);
+			assert.equal(hits.length, 1, `${id} 应恰好命中一次：${JSON.stringify(hits)}`);
+			assert.equal(hits[0].id, id, `${id} 形态名不对`);
+			assert.ok(!JSON.stringify(hits).includes(token), `${id} 返回值里不得出现命中串`);
+		}
+	});
+
+	it("github 的 gho_ 前缀同样命中（与 ghp_ 共用一个形态）", () => {
+		const hits = findCredentials(`token=${j("gho_", "0123456789abcdefghijklmnopqrstuvwxyz")}`);
+		assert.equal(hits.length, 1, JSON.stringify(hits));
+		assert.equal(hits[0].id, "github-token");
+	});
+
+	it("反例：路径名 `trellis-task-bac…` 里的词内 `sk-` 不得命中（左边界）", () => {
+		// 与 2026-10-18 的事故同形：`sk-` 藏在词中间，前面是字母 `a`
+		const insideWord = `/tmp/trellis-ta${j("sk-", "backupdirectoryabcdefghij")}`;
+		assert.deepEqual(findCredentials(insideWord), [], "词内 sk- 不得被误报为凭据");
+
+		// 同一串挪到词首（前面是空白）→ 必须命中，证明模式本身有效（反例不是"因为坏了才不命中"）
+		const atWordStart = ` ${j("sk-", "backupdirectoryabcdefghij")}`;
+		assert.equal(findCredentials(atWordStart).length, 1, "词首的 sk- 必须命中");
+	});
+
+	it("占位符 / 样例前缀白名单在凭据形态上继续有效", () => {
+		const benign = [
+			j("sk-", "x".repeat(24)), // xxx…
+			j("sk-ant-", "test-", "A".repeat(20)), // test-*
+			j("AKIA", "x".repeat(16)), // xxx…
+			j("AIza", "example-", "0".repeat(30)), // example-*
+			j("github_pat_", "test_", "a".repeat(22)), // test_*
+			j("sk_live_", "x".repeat(20)), // xxx…
+			j("xoxb-", "example-", "0".repeat(12)), // example-*
+			j("Bearer ", "test-", "a".repeat(20)), // test-*
+			j("Bearer ", "<PLACEHOLDER-0123456789>"), // <…>
+			j("Bearer ", "PLACEHOLDER-0123456789"), // PLACEHOLDER
+			// PEM 头无法内嵌占位符，但用 <PRIVATE KEY> 这种不匹配本形态的写法即可（文档用）
+			j("-----BEGIN ", "<PRIVATE KEY>-----"),
+		];
+		for (const text of benign) assert.deepEqual(findCredentials(text), [], `不应命中：${text}`);
+
+		// 白名单判定本身的单元检查（不依赖正则是否匹配）
+		assert.equal(isAllowedCredential(j("sk-", "xxxx")), true);
+		assert.equal(isAllowedCredential(j("github_pat_", "example_", "a".repeat(20))), true);
+		assert.equal(isAllowedCredential(j("sk-", "A1b2C3d4E5f6G7h8I9j0K1l2")), false);
 	});
 });
 
@@ -156,6 +229,36 @@ describe("故意注入 → 闸门必须拦住（自证）", () => {
 		assert.equal(result.ok, true, JSON.stringify(result.hits));
 	});
 });
+
+describe("故意注入通用凭据 → 闸门必须拦住（自证）", () => {
+	for (const { id, token } of CRED_CASES) {
+		it(`${id}：注入临时仓库 → ok=false，报告只有文件名/行号/形态`, () => {
+			const root = makeRepo(`cred-${id}`, {
+				"lib/keys.mjs": `export const K = "${token}";\n`,
+				"README.md": "# 正常内容\n",
+			});
+			execFileSync("git", ["-C", root, "add", "-A"]);
+
+			const result = scanRepository({ root, includePack: false });
+			assert.equal(result.ok, false, `${id} 未被拦住：${JSON.stringify(result.hits)}`);
+			const hit = result.hits.find((entry) => entry.reason === "credential");
+			assert.ok(hit, `${id} 应报 credential 命中：${JSON.stringify(result.hits)}`);
+			assert.equal(hit.file, "lib/keys.mjs");
+			assert.equal(hit.line, 1);
+			assert.equal(hit.value, "<REDACTED>");
+			assert.ok(!JSON.stringify(result).includes(token), `${id} 报告里绝不出现命中串`);
+		});
+	}
+
+	it("注入被白名单的占位形态 → 闸门放行（白名单不是摆设）", () => {
+		const root = makeRepo("cred-benign", {
+			"lib/keys.mjs": `export const K = "${j("sk-", "x".repeat(24))}";\n`,
+		});
+		execFileSync("git", ["-C", root, "add", "-A"]);
+		assert.equal(scanRepository({ root, includePack: false }).ok, true);
+	});
+});
+
 
 describe("live 指纹交叉校验（R-1 的直接防护）", () => {
 	it("形状上合规的 token（test-*），只要与本机 live 地址相同就拦下", () => {

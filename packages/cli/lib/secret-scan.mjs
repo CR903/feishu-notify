@@ -17,6 +17,20 @@
  *   - `xxx` / `PLACEHOLDER` / `REDACTED`
  *   - 文档与测试样例前缀：`test-*` / `example-*` / `fake-*` / `dummy-*` / `sample-*`
  *
+ * ---------------------------------------------------------------- 通用凭据形态（E）
+ *
+ * 除了飞书 hook 这一种形状，闸门还认**具名凭据形态**（见 CREDENTIAL_PATTERNS）：
+ * openai / anthropic / github / aws / google / slack / stripe / Bearer / PEM 私钥。
+ *
+ *   - **每条都带左边界** `(?<![A-Za-z0-9_-])`。这不是洁癖：没有它时，路径名
+ *     `trellis-task-bac…` 会被切出词内的 `ta·sk-bac…` 并误报成 `sk-` 凭据
+ *     （2026-10-18 实际发生过）。tests/secret-scan.test.mjs 有一条反例把这条钉住。
+ *   - 白名单（`<…>`/`xxx`/`PLACEHOLDER`/`test-*`/`example-*`/`${token}`）继续有效，
+ *     只是作用在“凭据的 secret 部分”上。PEM 头无法内嵌占位符，故一律命中；文档要举例
+ *     请写成 `-----BEGIN <PRIVATE KEY>-----`（不匹配本形态）。
+ *   - **报告里绝不出现命中串本身**：凭据命中只报文件名 + 行号 + 形态名，`value` 固定
+ *     为 `<REDACTED>`。检测函数 `findCredentials()` 返回的对象里根本不存在命中的字符串。
+ *
  * 另有一条**本机 live 指纹**交叉校验：把 `~/.local/bin/feishu-notify`、
  * `~/.config/opencode/plugins/feishu-notify.ts`、`~/.claude/settings.json` 里出现过的
  * hook token 提取成集合（只留内存，不打印、不落盘；提取时**不过样例白名单** ——
@@ -45,11 +59,69 @@ const TOKEN_PATTERN = new RegExp(escapeRegExp(HOOK_MARKER) + "([A-Za-z0-9_%.-]{6
 const ALLOWED_TOKEN = /^(?:x+|placeholder|redacted|your[-_ ]?webhook|\.\.\.|…)$/i;
 const ALLOWED_SAMPLE_TOKEN = /^(?:test|example|fake|dummy|sample)(?:[-_.][A-Za-z0-9_.-]+)?$/i;
 
+/**
+ * 具名凭据形态。每条：
+ *   - `id`      报告里用的形态名（只说“是什么形态”，与命中串无关，故不泄露）
+ *   - `pattern` 带 `g` 的正则；**左边界写在各条里**（`(?<![A-Za-z0-9_-])`），
+ *               否则路径名 `trellis-task-bac…` 里的 `sk-bac…` 会误报（实际事故）
+ *
+ * 注意：本文件自身的源码会被闸门扫描，所以这些正则字面量必须**不会命中自己** ——
+ * 每条前缀后紧跟的都是正则元字符（`[`、`\`），不是可构成 secret 的字符。
+ */
+const CREDENTIAL_PATTERNS = [
+	{ id: "openai-key", pattern: /(?<![A-Za-z0-9_-])sk-[A-Za-z0-9]{20,}/g },
+	{ id: "anthropic-key", pattern: /(?<![A-Za-z0-9_-])sk-ant-[A-Za-z0-9_-]{20,}/g },
+	{ id: "github-token", pattern: /(?<![A-Za-z0-9_-])gh[po]_[A-Za-z0-9]{36,}/g },
+	{ id: "github-pat", pattern: /(?<![A-Za-z0-9_-])github_pat_[A-Za-z0-9_]{22,}/g },
+	{ id: "aws-access-key-id", pattern: /(?<![A-Za-z0-9_-])AKIA[0-9A-Z]{16}/g },
+	{ id: "google-api-key", pattern: /(?<![A-Za-z0-9_-])AIza[0-9A-Za-z_-]{35}/g },
+	{ id: "slack-token", pattern: /(?<![A-Za-z0-9_-])xox[abprs]-[A-Za-z0-9-]{10,}/g },
+	{ id: "stripe-live-key", pattern: /(?<![A-Za-z0-9_-])sk_live_[A-Za-z0-9]{16,}/g },
+	{ id: "bearer-token", pattern: /(?<![A-Za-z0-9_-])Bearer\s+[A-Za-z0-9._~+/=-]{20,}/gi },
+	{ id: "private-key", pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },
+];
+
+/** 剥掉凭据前缀，剩下的才是 secret 部分（白名单判定作用在它身上） */
+const CREDENTIAL_PREFIX = /^(?:Bearer\s+|sk-ant-|sk_live_|sk-|github_pat_|gh[po]_|AKIA|AIza|xox[abprs]-)/i;
+
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 
 export function isAllowedToken(token) {
 	return ALLOWED_TOKEN.test(token) || ALLOWED_SAMPLE_TOKEN.test(token);
 }
+
+/**
+ * 凭据形态的白名单：`<...>` / `${token}` / PLACEHOLDER / REDACTED / your-key / xxx / test-* / example-*。
+ *
+ * PEM 头剥不掉前缀（`secret === raw`）→ 直接返回 false（一律命中）；想在文档里举例，
+ * 用不匹配本形态的 `-----BEGIN <PRIVATE KEY>-----`。
+ */
+export function isAllowedCredential(raw) {
+	if (/[<>]/.test(raw) || raw.includes("${")) return true;
+	if (/placeholder|redacted|your[-_ ]?(?:key|token|secret|webhook)/i.test(raw)) return true;
+	const secret = raw.replace(CREDENTIAL_PREFIX, "");
+	if (secret === raw) return false; // 没剥掉前缀（例如 PEM 头）→ 不是占位符
+	if (/^(?:x+|\.{3}|…)$/i.test(secret)) return true;
+	if (/^(?:test|example|fake|dummy|sample)(?:[-_.]|$)/i.test(secret)) return true;
+	return false;
+}
+
+/**
+ * 找出文本里的具名凭据（**返回值里没有任何命中串**，只有 index 与形态 id）。
+ * 报告方据此只能写出“哪条文件、第几行、什么形态”。
+ */
+export function findCredentials(text) {
+	const source = typeof text === "string" ? text : "";
+	const hits = [];
+	for (const { id, pattern } of CREDENTIAL_PATTERNS) {
+		for (const match of source.matchAll(pattern)) {
+			if (isAllowedCredential(match[0])) continue;
+			hits.push({ index: match.index, id });
+		}
+	}
+	return hits;
+}
+
 
 /** 找出文本里所有 hook token（**不过白名单**）—— live 文件里的 token 天然都是真实地址 */
 export function rawHookTokens(text) {
@@ -268,6 +340,19 @@ export function scanRepository({ root = process.cwd(), packRoot = root, includeP
 				detail: hit.live ? `与本机 live 文件（${tokens.get(hit.token)}）里的地址相同` : undefined,
 			});
 		}
+
+		// 通用凭据形态：只报形态名，绝不回传命中串（findCredentials 的返回值里本来就没有）
+		for (const hit of findCredentials(text)) {
+			const line = text.slice(0, hit.index).split("\n").length;
+			hits.push({
+				file: relative(indexRoot, absolute) || path,
+				scope,
+				line,
+				value: "<REDACTED>",
+				reason: "credential",
+				detail: `凭据形态：${hit.id}`,
+			});
+		}
 	}
 
 	return { ok: hits.length === 0, root: indexRoot, packRoot: packDir, scanned, hits, warnings, liveTokenCount: tokens.size };
@@ -282,14 +367,14 @@ export function formatReport(result) {
 	lines.push(`  本机 live 指纹：${result.liveTokenCount} 个（仅内存比对，不打印）`);
 	for (const warning of result.warnings) lines.push(`  ⚠ ${warning}`);
 	if (result.ok) {
-		lines.push("  ✓ 未发现真实 hook token");
+		lines.push("  ✓ 未发现真实 hook token 或具名凭据");
 		return lines.join("\n");
 	}
 	lines.push(`  ✗ 命中 ${result.hits.length} 处：`);
 	for (const hit of result.hits) {
 		lines.push(`    - ${hit.file}:${hit.line} [${hit.scope}] ${hit.reason} ${hit.value}${hit.detail ? ` — ${hit.detail}` : ""}`);
 	}
-	lines.push("  修复：把真实地址换成 <PLACEHOLDER>，或改为从配置读取。");
+	lines.push("  修复：把真实地址/凭据换成 <PLACEHOLDER> 或占位形态，或改为从配置/环境读取。");
 	return lines.join("\n");
 }
 
