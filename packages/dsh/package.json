@@ -1,0 +1,64 @@
+{
+  "name": "dsh-feishu-notify",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "DSH (Cordis) adapter: Feishu (Lark) notification cards when a turn ends or the harness needs you — sends through the feishu-notify CLI, which resolves the webhook from your own config (no address is ever shipped)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/CR903/feishu-notify.git",
+    "directory": "packages/dsh"
+  },
+  "bugs": {
+    "url": "https://github.com/CR903/feishu-notify/issues"
+  },
+  "homepage": "https://github.com/CR903/feishu-notify#readme",
+  "keywords": [
+    "feishu",
+    "lark",
+    "notification",
+    "notify",
+    "webhook",
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "bundle"
+  ],
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "devDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "scripts": {
+    "test": "node --test \"tests/*.test.mjs\"",
+    "version:patch": "npm version patch",
+    "version:minor": "npm version minor",
+    "version:major": "npm version major"
+  }
+}

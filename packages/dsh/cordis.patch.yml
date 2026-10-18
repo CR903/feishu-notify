@@ -1,0 +1,17 @@
+# dsh-feishu-notify — bundle 层 patch
+#
+# 这个文件由 `dsh.bundle.patch`（package.json）指到，被 `dsh.profile.bundles` 里
+# 写上 `dsh-feishu-notify` 时叠进 profile 树（顺序见 dsh-app-boot 的 profile.d.ts）。
+#
+# 这里只放插件行的默认值：真正的 webhook 不在这个文件里，也不在任何包里 ——
+# 发送时只传 `--channel dsh`，地址由内核 `feishu-notify` 从用户自己的配置解析。
+# 要改这里的值：在 profile 自己的 cordis.patch.yml 里按 `id: feishu-notify` 覆盖
+# （**整块替换 config**，见 --dump-config-schema 的 `$comment`）。
+- insert:
+    - id: feishu-notify
+      name: dsh-feishu-notify
+      config:
+        # 传给内核 CLI 的 channel 名（只是名字，不是地址）
+        channel: dsh
+        # 工具失败默认不推（一轮里可能有几十次），需要时打开
+        toolFailures: false
