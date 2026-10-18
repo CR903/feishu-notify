@@ -49,6 +49,11 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
 import { cloneJson, isPlainObject, makePlan, pathsFromEnv, prettyPath, readJsonFile, serializeJson, symlinkInfo } from "./common.mjs";
+import { checkPublished } from "./npm-check.mjs";
+
+// 注册表预检与 dsh 目标共用一份（lib/install-targets/npm-check.mjs）：口径必须一致，
+// 否则会出现"一个目标放行、另一个拒绝"的接线。这里 re-export 保持既有导入路径不变。
+export { checkPublished };
 
 export const id = "opencode";
 export const label = "opencode";
@@ -62,9 +67,6 @@ export const DEFAULT_PLUGIN_CHANNEL = "opencode";
 /** 写入形态：`object`（默认）或 `bare`（裸字符串）。两者解析等价，见文件头。 */
 export const FORMS = ["object", "bare"];
 export const DEFAULT_FORM = "object";
-
-export const DEFAULT_NPM = "npm";
-export const NPM_TIMEOUT_MS = 20_000;
 
 export function configPath(env = process.env) {
 	return join(pathsFromEnv(env).xdg, "opencode", "opencode.json");
@@ -138,55 +140,9 @@ export function detect({ env = process.env } = {}) {
 }
 
 /**
- * 预检：这个包在注册表上能解析吗？
- * 走 `npm view <name> version --json`（可用 `FEISHU_NOTIFY_NPM` 换 npm 可执行文件，测试用）。
- * **永不抛** —— 失败都是返回值，由调用方决定是拒绝写入还是继续。
+ * 包还不可解析 → 把"计划"改成"拒绝写入"，理由与下一步都写清楚。
+ * 预检本身（`checkPublished`）在 lib/install-targets/npm-check.mjs，与 dsh 目标共用。
  */
-export function checkPublished({ env = process.env, spawn = spawnSync, timeoutMs = NPM_TIMEOUT_MS, name = PACKAGE_NAME } = {}) {
-	const npm = env.FEISHU_NOTIFY_NPM || DEFAULT_NPM;
-	let result;
-	try {
-		// --workspaces=false：在 monorepo 里跑 npm 会多打一行 "Ignoring workspaces…"，那是噪音不是结论
-		result = spawn(npm, ["view", name, "version", "--json", "--workspaces=false"], { encoding: "utf8", timeout: timeoutMs, env, stdio: ["ignore", "pipe", "pipe"] });
-	} catch (error) {
-		return { ok: false, name, message: `调用 ${npm} 失败：${error?.message ?? error}` };
-	}
-	if (result.error) {
-		const code = result.error.code;
-		if (code === "ENOENT") return { ok: false, name, message: `找不到 npm（可用 FEISHU_NOTIFY_NPM 指定路径）：${npm}` };
-		if (code === "ETIMEDOUT" || result.signal) return { ok: false, name, message: `npm view 超时（${timeoutMs}ms，多半是网络/代理不可达）` };
-		return { ok: false, name, message: `调用 ${npm} 失败：${result.error.message}` };
-	}
-	if (result.status !== 0) {
-		return { ok: false, name, message: `npm view ${name} 退出码 ${result.status}：${compactNpmError(result.stderr)}` };
-	}
-
-	const raw = (result.stdout ?? "").trim();
-	let version;
-	try {
-		const parsed = JSON.parse(raw);
-		version = Array.isArray(parsed) ? parsed[parsed.length - 1] : parsed;
-	} catch {
-		version = raw.replace(/^"|"$/g, "");
-	}
-	if (typeof version !== "string" || version.trim() === "") {
-		return { ok: false, name, message: `npm view ${name} 没有给出可用版本号（输出：${raw.slice(0, 120)}）` };
-	}
-	return { ok: true, name, version: version.trim(), message: `${name}@${version.trim()} 可解析（npm view 实测）` };
-}
-
-/** 从 npm 的 stderr 里挑出真正的结论（丢掉 warn/http 这类噪音） */
-function compactNpmError(stderr) {
-	const lines = String(stderr ?? "")
-		.split("\n")
-		.map((line) => line.trim())
-		.filter(Boolean);
-	const errors = lines.filter((line) => line.startsWith("npm error"));
-	const chosen = (errors.length > 0 ? errors.slice(0, 2) : lines).join("；");
-	return chosen.replace(/\s+/g, " ").slice(0, 220);
-}
-
-/** 包还不可解析 → 把"计划"改成"拒绝写入"，理由与下一步都写清楚 */
 export function refuseUnpublished(plan, check) {
 	return makePlan({
 		...plan,
@@ -205,7 +161,7 @@ export function refuseUnpublished(plan, check) {
 /** 调用方（orchestrator）在真正要写之前调它；--dry-run 与 --no-verify 会跳过 */
 export async function preflight({ plan, env = process.env, spawn = spawnSync } = {}) {
 	if (plan.status !== "ok") return plan;
-	const check = checkPublished({ env, spawn });
+	const check = checkPublished({ env, spawn, name: PACKAGE_NAME });
 	if (!check.ok) return refuseUnpublished(plan, check);
 	return makePlan({ ...plan, notes: [...plan.notes, `预检：${check.message}`] });
 }

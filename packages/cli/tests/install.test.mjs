@@ -11,7 +11,8 @@
  *   - claude-code：合并两条 hook、按 command 去重（含"等价但不同文"）、保留用户既有 hook、
  *     只在显式 `--channel` 时才附加、坏 JSON/符号链接/hooks 形状不对 → 拒绝且不写
  *   - opencode：两种书写形态、去重、**包不可解析时拒绝写入**（--no-verify 可跳过）、坏 JSON 不覆盖
- *   - dsh：默认**只探测与计划、明确拒绝写入**；`--dsh-dev-dir` 联调可写；已接线 → 无需改动
+ *   - dsh：**包未发布（npm 解析不到）→ 明确拒绝写入**；包已发布 → 写 dependencies(^0.1.0) + bundles；
+ *     `--dsh-dev-dir` 联调可写且**不走注册表预检**；已接线 → 无需改动
  *   - 通用：`--dry-run` 零写入、写前 `.bak.<时间戳>`、**幂等**（第二次跑树哈希不变）、
  *     单目标失败不影响其它目标、回滚指令、退出码矩阵
  */
@@ -27,7 +28,7 @@ import { after, before, describe, it } from "node:test";
 
 import { commandFor as claudeCommandFor } from "../lib/install-targets/claude-code.mjs";
 import { PACKAGE_NAME as ocPackage, checkPublished, entryTarget } from "../lib/install-targets/opencode.mjs";
-import { listProfiles } from "../lib/install-targets/dsh.mjs";
+import { PACKAGE_NAME as dshPackage, listProfiles, preflight as dshPreflight } from "../lib/install-targets/dsh.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = join(REPO_ROOT, "bin", "feishu-notify-cli");
@@ -463,32 +464,59 @@ describe("install：opencode", () => {
 // ---------------------------------------------------------------- dsh
 
 describe("install：dsh", () => {
-	it("默认只探测与计划、**明确拒绝写入**（包还没实现，写进去会让 DSH 起不来）", () => {
+	it("包未发布（npm view 报 404）→ 明确拒绝写入、零改动，理由与预览都给出", () => {
 		const fixture = makeHome();
 		const before = treeState(fixture.home);
-		const result = runInstall(["--target", "dsh", "--yes"], { home: fixture.home });
+		const result = runInstall(["--target", "dsh", "--yes"], { home: fixture.home, npm: FAIL_NPM });
 
 		assert.equal(treeState(fixture.home), before, "拒绝写入必须是零改动");
-		assert.match(result.stdout, /⛔ 不会改动：dsh-feishu-notify 尚未实现/);
+		assert.match(result.stdout, /⛔ 不会改动：dsh-feishu-notify 尚未发布/);
+		assert.match(result.stdout, /npm error code E404/);
 		assert.match(result.stdout, /（预览）.*dependencies：加/);
 		assert.match(result.stdout, /（预览）.*dsh\.profile\.bundles：加/);
 		assert.match(result.stdout, /--dsh-dev-dir/);
+		assert.match(result.stdout, /等 packages\/dsh 发布后再跑 install/);
+		assert.deepEqual(readdirSync(dirname(fixture.profile())).filter((name) => name.includes(".bak.")), [], "拒绝时不写也不备份");
 		assert.equal(result.status, 1, "--target 明确点名却被拒 → 退出码 1");
 	});
 
-	it("--dsh-dev-dir 联调：写 link:<绝对路径> 到 dependencies 与 bundles", () => {
+	it("包已发布（npm view 可解析）→ 写 dependencies(^0.1.0) 与 bundles，并打印预检结论", () => {
+		const fixture = makeHome();
+		const result = runInstall(["--target", "dsh", "--yes"], { home: fixture.home, npm: OK_NPM });
+
+		assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+		const doc = readJson(fixture.profile());
+		assert.equal(doc.dependencies["dsh-feishu-notify"], "^0.1.0");
+		assert.deepEqual(doc.dsh.profile.bundles, ["dsh-mnemon", "dsh-feishu-notify"]);
+		assert.match(result.stdout, /预检：dsh-feishu-notify@0\.1\.0 可解析/);
+		assert.match(result.stdout, /cp -p ~\/\.dsh\/profiles\/web\/package\.json\.bak\./, "写入后要给回滚指令");
+		assert.deepEqual(readdirSync(dirname(fixture.profile())).filter((name) => name.includes(".bak.")).length, 1);
+	});
+
+	it("--dsh-dev-dir 联调：写 link:<绝对路径>，且**不受注册表预检影响**（npm 解析不到也照写）", () => {
 		const dev = join(TMP, "dev-dsh");
 		mkdirSync(dev, { recursive: true });
 		writeFileSync(join(dev, "package.json"), `${JSON.stringify({ name: "dsh-feishu-notify", version: "0.0.1" }, null, 2)}\n`);
 		const fixture = makeHome();
 
-		const result = runInstall(["--target", "dsh", "--yes", "--dsh-dev-dir", dev], { home: fixture.home });
+		// npm 桩故意报 404：联调写的是本地 link:，与注册表无关 → 预检必须被跳过
+		const result = runInstall(["--target", "dsh", "--yes", "--dsh-dev-dir", dev], { home: fixture.home, npm: FAIL_NPM });
 		assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
 
 		const doc = readJson(fixture.profile());
 		assert.equal(doc.dependencies["dsh-feishu-notify"], `link:${dev}`);
 		assert.deepEqual(doc.dsh.profile.bundles, ["dsh-mnemon", "dsh-feishu-notify"]);
+		assert.match(result.stdout, /跳过注册表预检/);
+		assert.ok(!/npm error code E404/.test(result.stdout), "联调不该跑 npm 预检");
 		assert.match(result.stdout, /不代替你跑 dsh\/pnpm|清单写好之后自己执行/);
+	});
+
+	it("--no-verify 强制写入（明知未发布也要接线时的逃生口，与 opencode 同形）", () => {
+		const fixture = makeHome();
+		const result = runInstall(["--target", "dsh", "--yes", "--no-verify"], { home: fixture.home, npm: FAIL_NPM });
+		assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+		assert.equal(readJson(fixture.profile()).dependencies["dsh-feishu-notify"], "^0.1.0");
+		assert.match(result.stdout, /--no-verify：跳过了写入前的包可解析性预检/);
 	});
 
 	it("--dsh-dev-dir 指向的包名不对 → 拒绝并说明", () => {
@@ -631,23 +659,24 @@ describe("install：模块级单元（注入 spawn，不联网）", () => {
 	const failSpawn = () => ({ status: 1, stdout: "", stderr: "npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/x - Not found\nnpm warn Ignoring workspaces for specified package(s)\n" });
 
 	it("checkPublished：成功/404/找不到 npm/超时 四种结果都不抛", () => {
-		const ok = checkPublished({ env: {}, spawn: okSpawn });
+		const name = ocPackage;
+		const ok = checkPublished({ env: {}, spawn: okSpawn, name });
 		assert.equal(ok.ok, true);
 		assert.equal(ok.version, "1.2.3");
 		assert.match(ok.message, /可解析/);
 
-		const fail = checkPublished({ env: {}, spawn: failSpawn });
+		const fail = checkPublished({ env: {}, spawn: failSpawn, name });
 		assert.equal(fail.ok, false);
 		assert.match(fail.message, /退出码 1/);
 		assert.match(fail.message, /npm error code E404/);
 		assert.ok(!fail.message.includes("Ignoring workspaces"), "warn/http 噪音不该进结论");
 
-		const missing = checkPublished({ env: {}, spawn: () => ({ error: Object.assign(new Error("nope"), { code: "ENOENT" }) }) });
+		const missing = checkPublished({ env: {}, spawn: () => ({ error: Object.assign(new Error("nope"), { code: "ENOENT" }) }), name });
 		assert.equal(missing.ok, false);
 		assert.match(missing.message, /找不到 npm/);
 		assert.match(missing.message, /FEISHU_NOTIFY_NPM/);
 
-		const slow = checkPublished({ env: {}, spawn: () => ({ error: Object.assign(new Error("timeout"), { code: "ETIMEDOUT" }) }) });
+		const slow = checkPublished({ env: {}, spawn: () => ({ error: Object.assign(new Error("timeout"), { code: "ETIMEDOUT" }) }), name });
 		assert.match(slow.message, /超时/);
 	});
 
@@ -678,6 +707,48 @@ describe("install：模块级单元（注入 spawn，不联网）", () => {
 
 		const names = listProfiles({ HOME: fixture.home }).map((profile) => profile.name);
 		assert.deepEqual(names, ["web"]);
+	});
+
+	it("dsh preflight：解析不到 → refuse（steps 留作预览、files 清空）；--dsh-dev-dir 不碰 npm（桩会炸）", async () => {
+		const plan = {
+			id: "dsh",
+			label: "DSH (Cordis)",
+			status: "ok",
+			detect: {},
+			steps: [{ title: "dependencies：加 `dsh-feishu-notify: ^0.1.0`" }],
+			files: [{ path: "/tmp/package.json", before: "a", after: "b" }],
+			notes: [],
+			reason: null,
+			nextSteps: ["dsh plugin --profile web pnpm install"],
+		};
+
+		const refused = await dshPreflight({ plan, env: {}, spawn: () => ({ status: 1, stdout: "", stderr: "npm error code E404\n" }) });
+		assert.equal(refused.status, "refuse");
+		assert.deepEqual(refused.files, [], "拒绝时不得留任何待写文件");
+		assert.deepEqual(refused.steps, plan.steps, "steps 原样保留：拒绝时打印的就是预览");
+		assert.match(refused.reason, /尚未发布/);
+		assert.match(refused.nextSteps[0], /等 packages\/dsh 发布后再跑 install/);
+		assert.ok(refused.nextSteps.includes("dsh plugin --profile web pnpm install"), "原计划的下一步不该被丢掉");
+
+		const passed = await dshPreflight({ plan, env: {}, spawn: () => ({ status: 0, stdout: '"0.1.0"\n', stderr: "" }) });
+		assert.equal(passed.status, "ok");
+		assert.deepEqual(passed.files, plan.files);
+		assert.match(passed.notes.join("\n"), /预检：dsh-feishu-notify@0\.1\.0 可解析/);
+
+		// --dsh-dev-dir：写本地 link:，与注册表无关 → 若真去调 npm，这个"会炸"的桩会把它变成 refuse
+		const dev = await dshPreflight({
+			plan,
+			env: {},
+			spawn: () => {
+				throw new Error("--dsh-dev-dir 路径不该调用 npm");
+			},
+			options: { dshDevDir: "/tmp/dev-dsh" },
+		});
+		assert.equal(dev.status, "ok", "联调路径不该被注册表预检挡住");
+		assert.deepEqual(dev.files, plan.files);
+		assert.match(dev.notes.join("\n"), /跳过注册表预检/);
+
+		assert.equal(dshPackage, "dsh-feishu-notify", "包名常量与写入内容的来源必须一致");
 	});
 });
 
