@@ -436,12 +436,15 @@ npm run fixtures:update  # overwrite tests/fixtures/* with a fresh capture
 | `tests/install.test.mjs` | All three install targets end to end in a simulated `HOME`: detection, merging, dedupe, refusals, both opencode forms, `--dry-run` zero-write, byte-hash idempotence, single-target failure isolation, rollback lines, exit codes |
 | `tests/init.test.mjs` | `init`, `channel`, `doctor`, `lib/sender.mjs`, isolation guards |
 | `tests/wiring.test.mjs` | `classify()` (including **dangling symlinks**), the four `checkWiring()` scenarios, and `doctor`'s wiring output/exit-code contract |
+| `tests/timeout.test.mjs` | `FEISHU_NOTIFY_TIMEOUT_MS` defaults/clamping, and the send-timeout branch end to end (a stub curl that sleeps 300ms vs a 50ms timeout) — the one wall-clock dependency, pinned deterministically |
 | `tests/secret-scan.test.mjs` | Token detection, whole-repo scan, injection self-test, live-fingerprint cross-check |
 | `tests/live.test.mjs` | Real network round trip — skipped unless `FEISHU_NOTIFY_LIVE=1` |
 
 `tests/fixtures/` holds the payloads captured from the **pre-config** sender (stub `curl`, five inputs: `--idle`, `--done`, `--title X --file`, `--text`, bare text). The config refactor had to reproduce them byte-for-byte with the timestamp normalized, which is why they are still in the repo: they are the definition of "the sender did not change". The **only** intended change since is the card footer (R9): the note moved from the author's hardcoded `Smarterlab ·` to the neutral default, and the harness pins `footer` to that neutral value so the capture cannot drift with the developer's own machine. Re-capture with `npm run fixtures:update` only when you intend to change that behaviour.
 
-Environment overrides: `FEISHU_NOTIFY_LIVE=1` (enable the live suite), `FEISHU_NOTIFY_CURL` (path to curl), `FEISHU_NOTIFY_CONFIG` (config path), `FEISHU_NOTIFY_CLI` / `FEISHU_NOTIFY_NODE` (resolver and interpreter for the sender), `FEISHU_NOTIFY_NPM` (npm binary used by `install`'s "is this package resolvable" pre-check; tests point it at a stub).
+Environment overrides: `FEISHU_NOTIFY_LIVE=1` (enable the live suite), `FEISHU_NOTIFY_CURL` (path to curl), `FEISHU_NOTIFY_CONFIG` (config path), `FEISHU_NOTIFY_CLI` / `FEISHU_NOTIFY_NODE` (resolver and interpreter for the sender), `FEISHU_NOTIFY_NPM` (npm binary used by `install`'s "is this package resolvable" pre-check; tests point it at a stub), `FEISHU_NOTIFY_TIMEOUT_MS` (timeout for the curl child that sends a test card: default `15000`, clamped to `10`–`600000`, an unparsable value falls back to the default).
+
+`FEISHU_NOTIFY_TIMEOUT_MS` exists mainly so tests can stop depending on the clock (a test that sends a card and then asserts the exit code is otherwise asserting "this machine finishes a curl in 15s"). The default, and every sending behaviour, is unchanged.
 
 ### Rollback
 

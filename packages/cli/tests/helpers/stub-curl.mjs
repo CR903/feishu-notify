@@ -8,6 +8,10 @@
  *   curl -sS -w '\n%{http_code}' -X POST <url> -H 'Content-Type: application/json' --data-binary <payload>
  * 替身行为：
  *   - 每次调用把 {"url","token"} 追加到 $FEISHU_STUB_LOG（调用方断言"打到了哪个地址"）
+ *   - **先记 log、再 sleep、最后回应答**：$FEISHU_STUB_SLEEP_SEC 有值且非 0 时先睡这么久
+ *     （直接交给 sleep 的参数，支持小数）。顺序是刻意的 —— 超时用例要在"子进程被 SIGKILL"
+ *     之后仍能断言"这次调用确实发生了，只是没等到应答"（tests/timeout.test.mjs）。
+ *     缺省不睡，既有用例行为逐字节不变。
  *   - 把 payload 原样写到 ${FEISHU_STUB_LOG}.payload（逐字节，供比对）
  *   - token 命中 $FEISHU_STUB_FAIL_CODE → HTTP 200 + {"code":19001}（模拟飞书"HTTP 200 但业务失败"）
  *   - token 命中 $FEISHU_STUB_FAIL_500  → HTTP 500 + {"code":19002}
@@ -16,6 +20,9 @@
 
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+
+/** 让替身慢下来的开关（值 = sleep 的参数，秒；支持 "0.3" 这种小数）。测试每次调用前设成自己需要的值。 */
+export const STUB_SLEEP_ENV = "FEISHU_STUB_SLEEP_SEC";
 
 export const STUB_CURL_SOURCE = [
 	"#!/bin/sh",
@@ -34,6 +41,11 @@ export const STUB_CURL_SOURCE = [
 	'token=$(printf \'%s\' "$url" | sed -E \'s#.*/##\')',
 	"printf '{\"url\":\"%s\",\"token\":\"%s\"}\\n' \"$url\" \"$token\" >> \"$log\"",
 	'printf \'%s\' "$payload" > "${log}.payload"',
+	"# 故意放慢（超时用例）：log/payload 已落盘，所以被杀掉之后仍能证明「调用发生过」",
+	'case "${FEISHU_STUB_SLEEP_SEC:-0}" in',
+	"  0|0.0|\"\") ;;",
+	'  *) sleep "${FEISHU_STUB_SLEEP_SEC}" ;;',
+	"esac",
 	'case ",${FEISHU_STUB_FAIL_CODE:-}," in',
 	"  *\",$token,\"*) printf '{\"code\":19001,\"msg\":\"token invalid\"}'; printf '\\n200\\n'; exit 0 ;;",
 	"esac",

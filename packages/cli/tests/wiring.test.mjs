@@ -66,6 +66,15 @@ function makeHome(name) {
 const SYSTEM_PATH = "/bin:/usr/bin:/usr/sbin:/sbin";
 const envFor = (home, binDir) => ({ ...process.env, HOME: home, PATH: `${binDir}:${SYSTEM_PATH}`, FEISHU_NOTIFY_NODE: undefined, FEISHU_NOTIFY_CLI: undefined });
 
+/**
+ * doctor 会**真实发测试卡片**（stub curl），发送超时因此成了墙钟依赖：
+ * 机器一忙（多文件并行 + 每文件大量 spawn），15s 默认超时会被撞上，doctor 便把 channel 判成"不通"
+ * → 退出码 1 → 本文件"接线诊断"的断言无理由变红（2026-10-18 实测到，见 implement 记录）。
+ * 这里要验证的是**接线诊断**，不是超时行为，所以把超时拉到很大；超时行为本身另有
+ * tests/timeout.test.mjs 的确定性用例顶着（300ms sleep vs 50ms 超时）。
+ */
+const DOCTOR_TEST_TIMEOUT_MS = "120000";
+
 // ---------------------------------------------------------------- classify
 
 describe("classify：一个路径的真相（lstat 判链接、跟随判目标）", () => {
@@ -236,6 +245,8 @@ describe("doctor：接线自检的输出与退出码", () => {
 				PATH: `${binDir}:/bin:/usr/bin:/usr/sbin:/sbin`,
 				FEISHU_NOTIFY_CONFIG: config,
 				FEISHU_STUB_LOG: STUB_LOG,
+				// 见 DOCTOR_TEST_TIMEOUT_MS：接线诊断不依赖墙钟，测试自己把超时调到不会撞上的值
+				FEISHU_NOTIFY_TIMEOUT_MS: DOCTOR_TEST_TIMEOUT_MS,
 				FEISHU_NOTIFY_CLI: undefined,
 				FEISHU_NOTIFY_NODE: undefined,
 			},

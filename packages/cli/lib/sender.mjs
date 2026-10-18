@@ -9,6 +9,17 @@
  * 避免 doctor 在坏网络下挂死）。
  *
  * 安全：本文件不接收、不返回、不打印 webhook 明文；需要展示时一律用 config.mjs 的 maskWebhook。
+ *
+ * ## 超时可注入（FEISHU_NOTIFY_TIMEOUT_MS）
+ *
+ * 超时是**这里唯一的墙钟依赖**。它原本写死 15s，于是"发测试卡片后断言退出码"的测试
+ * 实际在断言"这台机器 15s 内跑得完一次 stub curl"——压测/并行跑测试文件时机器一忙，
+ * doctor 就把 channel 判成"不通"→ 退出码 1，测试**红得毫无道理**（2026-10-18 实测：
+ * 连跑 5 遍根目录 npm test，第 4 遍 wiring.test.mjs 的 doctor 用例 duration 15628ms 撞上 15000ms 超时）。
+ *
+ * 所以：默认值不变（15s），但允许 env 覆盖，且**带范围钳制**（见 resolveTimeoutMs）。
+ * 接线诊断类的测试据此把超时调到很大（它们验证的是诊断，不是超时行为）；
+ * 超时行为本身另有一条专门的、确定性的用例（tests/timeout.test.mjs）。
  */
 
 import { spawnSync } from "node:child_process";
@@ -17,6 +28,32 @@ import { DEFAULT_FOOTER, maskWebhook } from "./config.mjs";
 
 export const DEFAULT_CURL = "curl";
 export const DEFAULT_CURL_TIMEOUT_MS = 15_000;
+
+/** 超时的合法范围（ms）：越界钳到边界，而不是照单全收 —— 0/负数/荒谬大值都是配置事故，不该把 doctor 挂死或变成立即失败 */
+export const MIN_CURL_TIMEOUT_MS = 10;
+export const MAX_CURL_TIMEOUT_MS = 600_000;
+
+/** 覆盖超时的环境变量名（单处定义，避免文档与实现各写一遍字符串） */
+export const TIMEOUT_ENV = "FEISHU_NOTIFY_TIMEOUT_MS";
+
+/**
+ * 解析生效的超时（ms）。**永不抛**：通知工具不该因为一个坏 env 就发不出去卡片。
+ *
+ *   - 未设置 / 空串 / 非数字（"abc"、""、NaN）→ 默认 15s（产品行为不变）
+ *   - 小数 → 取整
+ *   - 越界 → 钳到 [10ms, 600000ms]（0 与负数 → 10ms，比"立即失败"更可控；超大值 → 10min 上限）
+ */
+export function resolveTimeoutMs(env = process.env) {
+  const raw = env?.[TIMEOUT_ENV];
+  if (raw === undefined || raw === null) return DEFAULT_CURL_TIMEOUT_MS;
+  const text = String(raw).trim();
+  if (text === "") return DEFAULT_CURL_TIMEOUT_MS;
+
+  const parsed = Number(text);
+  if (!Number.isFinite(parsed)) return DEFAULT_CURL_TIMEOUT_MS;
+
+  return Math.min(MAX_CURL_TIMEOUT_MS, Math.max(MIN_CURL_TIMEOUT_MS, Math.trunc(parsed)));
+}
 
 /**
  * 测试卡片的 payload。**不含** webhook 明文（只有掩码），也不含任何密钥。
@@ -56,6 +93,9 @@ export function testCardPayload({ channelName, label, webhook, footer = DEFAULT_
  * 因此这里要求 2xx **且** body.code 为 0（body 不是带 code 的 JSON 时只看 HTTP 状态）。
  * init 靠它决定“验证通过才落盘”，所以严一点是必要的。
  *
+ * 超时：`timeoutMs` 缺省 = `resolveTimeoutMs(env)`（默认 15s，可被 FEISHU_NOTIFY_TIMEOUT_MS 覆盖）。
+ * 显式传入的 `timeoutMs` 优先 —— 测试据此在不依赖墙钟的前提下钉住各分支（含"发送超时"本身）。
+ *
  * @returns {{ok:boolean, httpCode:number, bodyCode:number|undefined, body:string, message:string, elapsedMs:number}}
  *          永不抛错（网络/HTTP 失败都是返回值），由调用方决定退出码。
  */
@@ -64,7 +104,7 @@ export function sendPayload({
   payload,
   curl = process.env.FEISHU_NOTIFY_CURL || DEFAULT_CURL,
   env = process.env,
-  timeoutMs = DEFAULT_CURL_TIMEOUT_MS,
+  timeoutMs = resolveTimeoutMs(env),
   spawn = spawnSync,
 } = {}) {
   const args = ["-sS", "-w", "\n%{http_code}", "-X", "POST", webhook, "-H", "Content-Type: application/json", "--data-binary", payload];

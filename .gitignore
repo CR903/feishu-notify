@@ -5,3 +5,5 @@ build/
 .DS_Store
 .env
 *.tgz
+# 与兄弟仓库一致：不提交 lockfile（opencode-mnemon-plugin / opencode-right-preview 均未提交）
+package-lock.json

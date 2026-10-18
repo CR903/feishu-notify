@@ -61,6 +61,12 @@ function readJson(path) {
 	return JSON.parse(readFileSync(path, "utf8"));
 }
 
+/**
+ * 本文件里发测试卡片的用例统一用的"不会撞上的"发送超时（见 envFor 的说明）。
+ * 它只是把墙钟依赖挪开，产品默认值（lib/sender.mjs 的 15s）不受影响。
+ */
+const TEST_TIMEOUT_MS = "120000";
+
 // ---------------------------------------------------------------- stub curl
 
 // 假 curl 的实现与安装见 tests/helpers/stub-curl.mjs（与 sender-compat.test.mjs 共用）
@@ -82,6 +88,13 @@ function envFor({ config = DEFAULT_CONFIG, extra = {} } = {}) {
 	delete env.FEISHU_NOTIFY_WEBHOOK;
 	delete env.FEISHU_NOTIFY_CHANNEL;
 	delete env.FEISHU_NOTIFY_CURL;
+	delete env.FEISHU_NOTIFY_TIMEOUT_MS;
+	// 发送超时默认调到很大：本文件里发测试卡片的用例断言的是**落盘/退出码/输出**，不是超时行为。
+	// 留着 15s 默认值的话，机器一忙（多文件并行跑、每文件大量 spawn）就会撞上超时，
+	// 把"验证通过"变成"发送超时" → 退出码 1 → 断言无理由变红（2026-10-18 实测到）。
+	// 超时行为本身由 tests/timeout.test.mjs 的确定性用例覆盖（300ms sleep vs 50ms 超时）。
+	// 需要测超时的用例用 extra 覆盖这一个值即可。
+	env.FEISHU_NOTIFY_TIMEOUT_MS = TEST_TIMEOUT_MS;
 	if (config === null) delete env.FEISHU_NOTIFY_CONFIG;
 	else env.FEISHU_NOTIFY_CONFIG = config;
 	Object.assign(env, extra);

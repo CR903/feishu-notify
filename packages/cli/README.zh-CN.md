@@ -423,12 +423,15 @@ npm run fixtures:update  # 用新捕获覆盖 tests/fixtures/*
 | `tests/install.test.mjs` | 模拟 `HOME` 下三个安装目标的端到端：探测、合并、去重、拒绝分支、opencode 两种写法、`--dry-run` 零写入、树哈希幂等、单目标失败隔离、回滚指令、退出码 |
 | `tests/init.test.mjs` | `init`、`channel`、`doctor`、`lib/sender.mjs`、隔离守卫 |
 | `tests/wiring.test.mjs` | `classify()`（含**悬空符号链接**）、`checkWiring()` 的四个场景、`doctor` 的接线输出与退出码契约 |
+| `tests/timeout.test.mjs` | `FEISHU_NOTIFY_TIMEOUT_MS` 的默认值与钳制，以及发送超时分支的端到端（替身 curl 睡 300ms × 超时 50ms）—— 唯一的墙钟依赖，用确定性手法钉死 |
 | `tests/secret-scan.test.mjs` | token 识别、全仓库扫描、注入自证、live 指纹交叉 |
 | `tests/live.test.mjs` | 真实网络往返 —— 未设 `FEISHU_NOTIFY_LIVE=1` 时跳过 |
 
 `tests/fixtures/` 存的是**改造前**发送端的 payload 基线（stub `curl`，五组输入：`--idle`、`--done`、`--title X --file`、`--text`、裸文本）。改配置解析时它们必须逐字节一致（时间戳归一化后），这也是它们留在仓库里的原因：它们是"发送端没变"的定义。此后**唯一**有意的改动就是卡片 footer（R9）：note 从作者硬编码的 `Smarterlab ·` 变成中性默认，同时 harness 把 `footer` 钉死在这个中性值上，捕获结果因此不会随开发机漂移。只有确实要改这个行为时才用 `npm run fixtures:update` 重新捕获。
 
-环境变量：`FEISHU_NOTIFY_LIVE=1`（开启 live 套件）、`FEISHU_NOTIFY_CURL`（curl 路径）、`FEISHU_NOTIFY_CONFIG`（配置路径）、`FEISHU_NOTIFY_CLI` / `FEISHU_NOTIFY_NODE`（发送端用的解析器与解释器）、`FEISHU_NOTIFY_NPM`（`install` 预检用的 npm 可执行文件；测试指向替身）。
+环境变量：`FEISHU_NOTIFY_LIVE=1`（开启 live 套件）、`FEISHU_NOTIFY_CURL`（curl 路径）、`FEISHU_NOTIFY_CONFIG`（配置路径）、`FEISHU_NOTIFY_CLI` / `FEISHU_NOTIFY_NODE`（发送端用的解析器与解释器）、`FEISHU_NOTIFY_NPM`（`install` 预检用的 npm 可执行文件；测试指向替身）、`FEISHU_NOTIFY_TIMEOUT_MS`（发测试卡片那个 curl 子进程的超时：默认 `15000`，钳在 `10`–`600000`，解析不出来就回退默认）。
+
+`FEISHU_NOTIFY_TIMEOUT_MS` 主要是给测试用的：不然"发一张卡片再断言退出码"的用例，实际是在断言"这台机器 15s 内跑得完一次 curl"。默认值与任何发送语义都没变。
 
 ### 回滚
 

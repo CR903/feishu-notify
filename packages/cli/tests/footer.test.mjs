@@ -64,6 +64,9 @@ writeFileSync(BODY, "同一份正文\n");
 let counter = 0;
 const tmpConfig = (label) => join(TMP, `case-${++counter}-${label}`, "config.json");
 
+/** 发卡片用例统一用的"不会撞上的"发送超时；见 envFor 的说明（产品默认值不受影响） */
+const TEST_TIMEOUT_MS = "120000";
+
 /** 写一个只含一个 channel 的配置（writeConfig 会顺手断言 0600 这条路是真的在走） */
 function seedConfig(path, { footer, webhook = A, channel = "default" } = {}) {
 	const config = { version: 1, activeChannel: channel, channels: { [channel]: { webhook } } };
@@ -74,7 +77,10 @@ function seedConfig(path, { footer, webhook = A, channel = "default" } = {}) {
 
 function envFor({ config = DEFAULT_CONFIG, extra = {} } = {}) {
 	const env = { ...process.env, HOME, XDG_CONFIG_HOME: XDG, PATH: `${STUB_DIR}:${process.env.PATH}`, FEISHU_STUB_LOG: STUB_LOG };
-	for (const key of ["FEISHU_NOTIFY_WEBHOOK", "FEISHU_NOTIFY_CHANNEL", "FEISHU_NOTIFY_CURL"]) delete env[key];
+	for (const key of ["FEISHU_NOTIFY_WEBHOOK", "FEISHU_NOTIFY_CHANNEL", "FEISHU_NOTIFY_CURL", "FEISHU_NOTIFY_TIMEOUT_MS"]) delete env[key];
+	// 与 init.test.mjs 同一约定：这里发卡片是为了断言**卡片内容/退出码**，不该顺带断言"机器 15s 内跑得完"。
+	// 发送超时本身由 tests/timeout.test.mjs 的确定性用例覆盖。
+	env.FEISHU_NOTIFY_TIMEOUT_MS = TEST_TIMEOUT_MS;
 	if (config === null) delete env.FEISHU_NOTIFY_CONFIG;
 	else env.FEISHU_NOTIFY_CONFIG = config;
 	Object.assign(env, extra);
