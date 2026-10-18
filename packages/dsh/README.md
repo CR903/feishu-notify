@@ -6,8 +6,9 @@ Sending goes through the shared `feishu-notify` CLI, which resolves the webhook 
 config** — this package ships **no address** and never talks HTTP itself.
 
 > **Status: implemented, not yet published.** Everything below is measured against DSH
-> **0.2.0-rc.2** on this machine. `packages/dsh` is linked into a throwaway profile and the turn-end
-> path (card arrival, `--channel dsh` resolution, uninstall) was verified end-to-end; the
+> **0.2.0-rc.2** on this machine. `packages/dsh` was linked into a throwaway profile (**since
+> deleted**) and the turn-end path (card arrival, `--channel dsh` resolution, uninstall) was verified
+> end-to-end; the
 > `user-questions/request` waterfall is implemented against the shipped `.d.ts` and covered by stub
 > tests, but **has not been observed firing inside a live DSH** (see “Verified vs not” at the end).
 
