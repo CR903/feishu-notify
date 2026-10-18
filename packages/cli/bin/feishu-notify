@@ -87,6 +87,35 @@ except:
 " 2>/dev/null
 }
 
+# ========== 用法（单一真源：无参数提示 与 --help/-h 共用这一份）==========
+# 默认打到 stdout。需要打到 stderr 的调用方自己重定向（未知参数分支）。
+usage() {
+  echo "用法: $0 <消息内容> [--text] [--title 标题] [--file <path>] [--webhook URL] [--channel name] [--source 来源] [--hook] [--idle] [--done]"
+  echo ""
+  echo "选项:"
+  echo "  -h, --help            显示本帮助（打印到 stdout 后退出，不发送任何消息）"
+  echo "  --                    其后所有参数都当作消息正文（发送以 - 开头的文本时的转义口）"
+  echo "  --text                发纯文本而不是卡片"
+  echo "  --title <标题>        卡片标题（默认 <来源>通知）"
+  echo "  --file <path>         正文从文件读（文件不存在 → exit 1）"
+  echo "  --source <来源>       覆盖自动检测的来源（终端 / VS Code 插件端 / 桌面端）"
+  echo "  --webhook <URL>       覆盖 webhook（最高优先，校验 https + 形状）"
+  echo "  --channel <name>      用配置里指定 channel（缺省用 activeChannel）"
+  echo "  --hook / --idle / --done  hook 模式，从 stdin 读 JSON（--done 无内容时静默 exit 0）"
+  echo ""
+  echo "示例:"
+  echo "  feishu-notify '任务完成'"
+  echo "  feishu-notify --title '部署' \$'构建成功\n已发布到测试环境'"
+  echo "  feishu-notify --file result.log"
+  echo "  feishu-notify --channel opencode --title 'T' --file msg.txt"
+  echo "  feishu-notify --webhook 'https://open.feishu.cn/open-apis/bot/v2/hook/xxx' --title 'T' --file msg.txt"
+  echo "  feishu-notify --hook"
+  echo "  feishu-notify --done"
+  echo ""
+  echo "webhook 从配置解析（缺配置会提示先跑 npx feishu-notify-cli init）；诊断用 npx feishu-notify-cli doctor"
+  echo "卡片底部 footer 也是配置项（未配置时中性默认 feishu-notify）；查看：npx feishu-notify-cli footer"
+}
+
 # 解析参数
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -146,6 +175,23 @@ while [ $# -gt 0 ]; do
       MSG="${MSG}${MSG_FOOTER}"
       shift
       ;;
+    -h | --help)
+      # 只打印用法：不发请求、不解析配置。stdout 是给人看的正常输出，故用 stdout。
+      usage
+      exit 0
+      ;;
+    --)
+      # 转义口：其后全部当作正文，不再做 flag 解析（用于发送以 - 开头的文本）
+      shift
+      MSG="$*"
+      break
+      ;;
+    -*)
+      # 未知 flag 绝不落进正文：否则 `--help`/`--bogus` 会被真的发到群里。
+      echo "未知参数：$1" >&2
+      usage >&2
+      exit 2
+      ;;
     *) MSG="$1"; shift ;;
   esac
 done
@@ -157,19 +203,7 @@ if [ -n "$FILE" ]; then
 fi
 
 [ -z "$MSG" ] && {
-  echo "用法: $0 <消息内容> [--text] [--title 标题] [--file <path>] [--webhook URL] [--channel name] [--source 来源] [--hook] [--idle] [--done]"
-  echo ""
-  echo "示例:"
-  echo "  feishu-notify '任务完成'"
-  echo "  feishu-notify --title '部署' $'构建成功\n已发布到测试环境'"
-  echo "  feishu-notify --file result.log"
-  echo "  feishu-notify --channel opencode --title 'T' --file msg.txt"
-  echo "  feishu-notify --webhook 'https://open.feishu.cn/open-apis/bot/v2/hook/xxx' --title 'T' --file msg.txt"
-  echo "  feishu-notify --hook"
-  echo "  feishu-notify --done"
-  echo ""
-  echo "webhook 从配置解析（缺配置会提示先跑 npx feishu-notify-cli init）；诊断用 npx feishu-notify-cli doctor"
-  echo "卡片底部 footer 也是配置项（未配置时中性默认 feishu-notify）；查看：npx feishu-notify-cli footer"
+  usage
   exit 1
 }
 

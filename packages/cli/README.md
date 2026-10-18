@@ -315,6 +315,8 @@ exit code, and the test suite pins that behaviour (`tests/wiring.test.mjs`).
 | Flag | Effect |
 |---|---|
 | `"text"` (positional) | Message body |
+| `-h` / `--help` | Print usage to stdout and exit `0`; no request is made |
+| `--` | Everything after it is the message body (escape hatch for text starting with `-`) |
 | `--title <t>` | Card title (default: `<source>通知`) |
 | `--file <path>` | Body read from a file (missing file → `exit 1`) |
 | `--text` | Send a plain-text message instead of a card |
@@ -322,7 +324,7 @@ exit code, and the test suite pins that behaviour (`tests/wiring.test.mjs`).
 | `--source <s>` | Override the detected source (`终端` / `VS Code 插件端` / `桌面端`) |
 | `--webhook <url>` / `--channel <n>` | Forwarded to the resolver (see precedence) |
 
-Exit codes: `0` sent · `1` no message / missing file / non-200 from Feishu · `2` webhook unresolvable or invalid.
+Exit codes: `0` sent · `1` no message / missing file / non-200 from Feishu · `2` unknown flag, or webhook unresolvable/invalid. An unknown `-flag` is never sent as a message body.
 
 Card payload (from the byte-exact golden fixtures):
 
