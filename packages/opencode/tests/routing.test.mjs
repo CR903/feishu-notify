@@ -12,9 +12,9 @@
  *
  * 每个组合都从两个维度各验一遍：
  *   模块：`src/feishu-notify.ts`（包内源文件） × `~/.config/opencode/plugins/feishu-notify.ts`（live，若已部署）
- *   路径：**默认发送路径**（不注入 run，走插件里真实的 NOTIFY_BIN；只有装了全局发送端才能跑）
+ *   路径：**默认发送路径**（不注入 run，走插件真实的 resolveNotifyBin 解析；只有装了全局发送端才能跑）
  *         × 注入 run（argv 交给仓库里那份发送端）—— 这条任何机器都能跑，所以取证不会因为
- *           "本机没装 CLI" 而静默跳过（NOTIFY_BIN 的可移植性是另一个问题，见回报）
+ *           "本机没装 CLI" 而静默跳过（解析顺序本身由 tests/notify-bin.test.mjs 覆盖）
  *
  * 于是"部署出去的那份也这么路由"不是推断 —— 前提是 live == 包内，由 live-gate.test.mjs 的哈希闸门钉住。
  * 输出只打印掩码；真实 token 只在本进程内存里比对。
@@ -34,11 +34,11 @@ const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SENDER = resolve(PACKAGE_ROOT, '..', 'cli', 'bin', 'feishu-notify');
 const CLI = resolve(PACKAGE_ROOT, '..', 'cli', 'bin', 'feishu-notify-cli');
 const LIVE_PLUGIN = join(homedir(), '.config', 'opencode', 'plugins', 'feishu-notify.ts');
-const LIVE_SENDER = join(homedir(), '.local', 'bin', 'feishu-notify'); // 插件里的 NOTIFY_BIN
+const LIVE_SENDER = join(homedir(), '.local', 'bin', 'feishu-notify'); // 发送端默认安装位置（解析第 2 顺位）
 
 const HAS_SIBLING = existsSync(SENDER) && existsSync(CLI);
 const SIBLING_SKIP = '兄弟包 packages/cli 不在（单拷本包时才会缺）';
-const NOT_INSTALLED_SKIP = `本机没装发送端 ${LIVE_SENDER}（插件里的 NOTIFY_BIN 就是它）—— 先 npm i -g feishu-notify-cli`;
+const NOT_INSTALLED_SKIP = `本机没装发送端 ${LIVE_SENDER}（且 PATH 里也没有）—— 先 npm i -g feishu-notify-cli`;
 
 const TMP = mkdtempSync(join(tmpdir(), 'feishu-notify-oc-routing-'));
 const STUB_DIR = join(TMP, 'stub-bin');
@@ -114,7 +114,7 @@ const MODES = [
 			module.feishuNotify(args, { channel, logger, run: runnerWith(senderEnv({ FEISHU_NOTIFY_CONFIG: config })) }),
 	},
 	{
-		label: '默认路径（插件的 NOTIFY_BIN）',
+		label: '默认路径（resolveNotifyBin 解析出的发送端）',
 		skip: () => (HAS_SIBLING ? (existsSync(LIVE_SENDER) ? false : NOT_INSTALLED_SKIP) : SIBLING_SKIP),
 		invoke: (module, args, { channel, logger, config }) =>
 			withProcessEnv(senderEnv({ FEISHU_NOTIFY_CONFIG: config }), () => module.feishuNotify(args, { channel, logger })),

@@ -40,16 +40,28 @@
  *   form.created           data: { form: { id, sessionID, title, fields[] } }
  *   ⚠️ permission.asked 仍未实测到达（与 form.* 同为 ephemeral，结构上应当可达）
  *
- * 调试：FEISHU_NOTIFY_DEBUG=1 → ~/.local/share/opencode/feishu-notify.log
- *   （env 是进程级的，opencode server 常驻，改后需重启 server 才生效）
- *   降级（有 channel → 没有 channel）与放弃发送都在这个日志里，不会静默。
+ * 发送端（`feishu-notify`）在哪：插件**不写死**用户 bin 目录
+ *   解析顺序（见 resolveNotifyBin）：`FEISHU_NOTIFY_BIN` → `~/.local/bin/feishu-notify`（可执行才算）
+ *   → PATH 里的 `feishu-notify` → 都没有则**不发送**并写一条 ERROR 日志。
+ *   npm 的全局 bin 目录不一定在 `~/.local/bin`（nvm / Homebrew / pnpm 各有各的），
+ *   写死一个路径正是"通知发不出、而且看不出来"的成因。显式设了 `FEISHU_NOTIFY_BIN` 却没指向
+ *   可执行文件时**直接报错**，不悄悄改用另一个二进 —— 那只会让排查更久。
+ *
+ * 日志分两级（同一个文件：~/.local/share/opencode/feishu-notify.log）
+ *   logError()  **无条件写**，行首带 ` ERROR `：发送失败、channel 降级、找不到发送端、
+ *               正文文件写入失败、事件流中断（后者等于此后不再有通知）。
+ *   log()       只有 FEISHU_NOTIFY_DEBUG=1 才写（事件追踪、指标口径等细节）。
+ *   env 是进程级的，opencode server 常驻，改后需重启 server 才生效。
+ *   排障第一步：`grep ' ERROR ' ~/.local/share/opencode/feishu-notify.log`
  */
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  accessSync,
   appendFileSync,
   closeSync,
+  constants as fsConstants,
   mkdirSync,
   openSync,
   readFileSync,
@@ -58,10 +70,13 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { Plugin } from '@opencode/plugin';
 
-const NOTIFY_BIN = `${process.env.HOME}/.local/bin/feishu-notify`;
 const MSG_MAX_LEN = 2000;
+/** 插件所有落盘位置以它为根（HOME 缺失时退回 os.homedir()，否则会拼出 `undefined/.local/…`） */
+const HOME_DIR = (process.env.HOME ?? '').trim() || homedir();
 
 /** 发送端默认 channel（`options.channel` 可覆盖）。这里只是**名字**，不是地址。 */
 export const DEFAULT_CHANNEL = 'opencode';
@@ -71,6 +86,8 @@ export const NOTIFY_SOURCE = 'opencode';
 export const CONFIG_ERROR_EXIT = 2;
 /** 发送端（bash）超时；超时不算配置问题，不触发降级 */
 export const NOTIFY_TIMEOUT_MS = 10_000;
+/** 显式指定发送端路径的 env（优先级最高；全局 bin 目录不在 ~/.local/bin 时用这个） */
+export const NOTIFY_BIN_ENV = 'FEISHU_NOTIFY_BIN';
 // 同一通知在窗口内只发一次，且必须跨插件实例生效。
 // 实测（2026-10-18）：同一条 session.execution.succeeded（同一个 evt_ id）被投递了 5 次
 // （08:22:59.614/.617/.618/.619/.619，间隔几毫秒），即当时有 5 个插件实例各订阅了一条事件流。
@@ -80,10 +97,10 @@ export const NOTIFY_TIMEOUT_MS = 10_000;
 const DONE_DEDUPE_MS = 8000;
 const PERMISSION_DEDUPE_MS = 10_000;
 const TITLE_TTL_MS = 5 * 60 * 1000;
-const LOG_FILE = `${process.env.HOME}/.local/share/opencode/feishu-notify.log`;
-const CLAIM_DIR = `${process.env.HOME}/.local/share/opencode/feishu-claims`;
+const LOG_FILE = `${HOME_DIR}/.local/share/opencode/feishu-notify.log`;
+const CLAIM_DIR = `${HOME_DIR}/.local/share/opencode/feishu-claims`;
 // 回合基线落盘目录：热重载后新实例能把基线接回来（否则整轮 耗时/tokens 都算不出来）
-const TURN_DIR = `${process.env.HOME}/.local/share/opencode/feishu-turn`;
+const TURN_DIR = `${HOME_DIR}/.local/share/opencode/feishu-turn`;
 const TURN_TTL_MS = 6 * 60 * 60 * 1000;
 // 需要抓原始事件载荷做验证的时机（DEBUG 时打印一次完整 JSON 片段）
 const TRIGGER_TYPES = new Set([
@@ -124,14 +141,165 @@ interface ExecutionData {
 
 type Ctx = Plugin.Context;
 
-function log(msg: string): void {
-  if (!DEBUG) return;
+// ---------------------------------------------------------------- 发送端定位（G1）
+
+export type Env = Record<string, string | undefined>;
+
+export type BinSource = 'env' | 'home' | 'path';
+
+export interface BinCandidate {
+  source: BinSource;
+  path: string;
+  ok: boolean;
+  detail: string;
+}
+
+export interface BinResolution {
+  /** 可直接交给 execFileSync 的**绝对路径**；null = 一个都没找到 → **不发送** */
+  path: string | null;
+  source: BinSource | null;
+  reason: BinSource | 'env-invalid' | 'not-found';
+  /** 找过的每一条，按顺序（失败时原样写进日志，用户照着就能看出缺哪一步） */
+  candidates: BinCandidate[];
+}
+
+/** 可执行文件探测：是普通文件（跟随符号链接）+ 有 x 位 */
+export function isExecutableFile(path: string): boolean {
   try {
-    appendFileSync(LOG_FILE, `${new Date().toISOString()} ${msg}\n`);
+    if (!statSync(path).isFile()) return false;
+    accessSync(path, fsConstants.X_OK);
+    return true;
   } catch {
-    // 日志失败不影响通知
+    return false;
   }
 }
+
+/**
+ * 发送端路径的解析顺序（**不缓存**：发通知是低频操作，几次 stat 的代价远小于
+ * "刚 npm i -g 完却因为缓存还指向旧路径"这种排查成本）：
+ *
+ *   1. `FEISHU_NOTIFY_BIN`（显式指定；设了但不可执行 → **报错**，不悄悄改用别的）
+ *   2. `~/.local/bin/feishu-notify`（可执行才算；这是 npm 全局装在默认 prefix 时的位置）
+ *   3. PATH 里的 `feishu-notify`（nvm / Homebrew / pnpm 的全局 bin 目录各不一样，靠这条兜住）
+ *   4. 都没有 → `path: null`，调用方**不得发送**，并写一条 ERROR 日志
+ *
+ * 为什么显式指定不参与"再往下找"：`FEISHU_NOTIFY_BIN` 是排障手段。它指错了却静默改用
+ * 另一个二进，用户会以为"设置生效了"，实际跑的是别的东西 —— 那正是本项目反复踩的坑。
+ */
+export function resolveNotifyBin({
+  env = process.env,
+  isExecutable = isExecutableFile,
+}: { env?: Env; isExecutable?: (path: string) => boolean } = {}): BinResolution {
+  const candidates: BinCandidate[] = [];
+  const explicit = (env[NOTIFY_BIN_ENV] ?? '').trim();
+
+  if (explicit !== '') {
+    const ok = isExecutable(explicit);
+    candidates.push({
+      source: 'env',
+      path: explicit,
+      ok,
+      detail: ok ? `${NOTIFY_BIN_ENV} 指定` : `${NOTIFY_BIN_ENV} 指向的文件不存在或不可执行`,
+    });
+    return ok
+      ? { path: explicit, source: 'env', reason: 'env', candidates }
+      : { path: null, source: null, reason: 'env-invalid', candidates };
+  }
+
+  const home = (env.HOME ?? '').trim() || HOME_DIR;
+  const homeBin = join(home, '.local', 'bin', 'feishu-notify');
+  const homeOk = isExecutable(homeBin);
+  candidates.push({
+    source: 'home',
+    path: homeBin,
+    ok: homeOk,
+    detail: homeOk ? '默认位置' : '不存在或不可执行（全局 bin 目录不一定在这里）',
+  });
+  if (homeOk) return { path: homeBin, source: 'home', reason: 'home', candidates };
+
+  const dirs = (env.PATH ?? '')
+    .split(process.platform === 'win32' ? ';' : ':')
+    .map((dir) => dir.trim())
+    .filter(Boolean);
+  for (const dir of dirs) {
+    const candidate = join(dir, 'feishu-notify');
+    if (isExecutable(candidate)) {
+      candidates.push({ source: 'path', path: candidate, ok: true, detail: 'PATH 命中' });
+      return { path: candidate, source: 'path', reason: 'path', candidates };
+    }
+  }
+
+  candidates.push({
+    source: 'path',
+    path: 'feishu-notify',
+    ok: false,
+    detail: `PATH 的 ${dirs.length} 个目录里都没有可执行的 feishu-notify`,
+  });
+  return { path: null, source: null, reason: 'not-found', candidates };
+}
+
+/** 把解析失败翻译成"下一步该干什么"，供 runSender 的 stderr 与 ERROR 日志共用 */
+export function describeBinFailure(resolution: BinResolution): string {
+  if (resolution.reason === 'env-invalid') {
+    const first = resolution.candidates[0];
+    return (
+      `找不到发送端：${NOTIFY_BIN_ENV}=${first?.path ?? '<空>'} 不存在或不可执行。` +
+      `显式指定不会被忽略（否则会出现"改了设置却没效果"），请修正它或删掉这个 env`
+    );
+  }
+  const searched = resolution.candidates
+    .map((candidate) => `${candidate.path}（${candidate.detail}）`)
+    .join('；');
+  return `找不到发送端 feishu-notify。已找：${searched}`;
+}
+
+// ---------------------------------------------------------------- 日志（两级）
+
+export type NotifyLogLevel = 'debug' | 'error';
+export type NotifyLogger = (msg: string, level: NotifyLogLevel) => void;
+
+let logDirReady = false;
+
+/** 追加一行；返回是否写成（写不进去时由 logError 退到 stderr） */
+function appendLog(line: string): boolean {
+  try {
+    if (!logDirReady) {
+      mkdirSync(dirname(LOG_FILE), { recursive: true });
+      logDirReady = true;
+    }
+    appendFileSync(LOG_FILE, line);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 细节追踪：只有 FEISHU_NOTIFY_DEBUG=1 才写（事件载荷、指标口径、每次发送的 argv） */
+function log(msg: string): void {
+  if (!DEBUG) return;
+  appendLog(`${new Date().toISOString()} ${msg}\n`);
+}
+
+/**
+ * **无条件写**：发送失败 / channel 降级 / 找不到发送端。
+ *
+ * 静默失败是这个项目反复踩的坑（R11 的悬空链接、插件写死 bin 路径都是同一类）。
+ * 这类事件必须落盘，不依赖用户先打开 DEBUG；行首固定 ` ERROR `，排障时 grep 得到。
+ * 连日志都写不进去时退到 stderr —— 至少 opencode 自己的日志里还留得下。
+ */
+function logError(msg: string): void {
+  const line = `${new Date().toISOString()} ERROR ${msg}`;
+  if (appendLog(`${line}\n`)) return;
+  try {
+    console.error(`[feishu-notify] ${line}`);
+  } catch {
+    // 连 stderr 都不可用（极罕见）：放弃，但绝不影响通知本身
+  }
+}
+
+/** 默认两级分流；测试注入的 logger 只要忽略第二个参数即可（向后兼容） */
+const defaultLogger: NotifyLogger = (msg, level) => (level === 'error' ? logError(msg) : log(msg));
+
 
 // ---------------------------------------------------------------- channel（R1/R3）
 
@@ -246,10 +414,30 @@ export function sendWithChannelFallback({
 /**
  * 真实发送：execFileSync + 参数数组（标题里的引号不会被 shell 吃掉；旧版拼字符串有注入/截断风险）。
  * 永不抛：一切失败都变成返回值，交给决策与日志。
+ *
+ * 发送端路径在**每次调用时**解析（`resolveNotifyBin`）。解析不出来就不 spawn ——
+ * 用一个猜出来的路径去跑，只会把"找不到依赖"伪装成别的错误。
+ * `env` / `exec` 可注入：测试据此证明"真的没 spawn"或"spawn 的是解析出的那个路径"。
  */
-function runSender(argv: string[]): NotifyRunResult {
+export function runSender(
+  argv: string[],
+  { env = process.env, exec = execFileSync }: { env?: Env; exec?: typeof execFileSync } = {},
+): NotifyRunResult {
+  const bin = resolveNotifyBin({ env });
+  if (!bin.path) {
+    return {
+      ok: false,
+      status: -1,
+      stderr:
+        `${describeBinFailure(bin)}。` +
+        `先安装内核 CLI（npm i -g feishu-notify-cli），或用 ${NOTIFY_BIN_ENV} 指定发送端路径`,
+      stdout: '',
+    };
+  }
+  log(`notify bin: ${bin.path}（source=${bin.source}）`);
+
   try {
-    const stdout = execFileSync(NOTIFY_BIN, argv, {
+    const stdout = exec(bin.path, argv, {
       timeout: NOTIFY_TIMEOUT_MS,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -261,19 +449,29 @@ function runSender(argv: string[]): NotifyRunResult {
     const stderr =
       text(err.stderr) ||
       text(err.stdout) ||
-      (err.code === 'ENOENT' ? `找不到发送端：${NOTIFY_BIN}（需先安装 feishu-notify-cli）` : String(err.message ?? e));
+      (err.code === 'ENOENT'
+        ? `找不到发送端：${bin.path}（解析到了但起不来，检查它是不是被删了；需先安装 feishu-notify-cli）`
+        : String(err.message ?? e));
     return { ok: false, status: typeof err.status === 'number' ? err.status : -1, stderr, stdout: '' };
   }
 }
 
 /**
- * 发一条通知，并把结果写进 DEBUG 日志。降级与放弃都是**显式的、被记录的行为**。
+ * 发一条通知，并把结果写进日志。降级与放弃都是**显式的、被记录的行为**。
  *
- * `run` / `logger` 可注入：测试据此断言"实际传了什么 argv"与"日志里有没有写明降级"，无需真的发卡。
+ * 两级日志：`sent` 的细节走 debug（受 FEISHU_NOTIFY_DEBUG 控制）；
+ * **降级与任何失败走 error（无条件落盘）** —— 通知丢失绝不该只存在于 DEBUG 里。
+ *
+ * `run` / `logger` 可注入：测试据此断言"实际传了什么 argv""日志写到了哪一级"，无需真的发卡。
+ * 注入的 `logger` 忽略第二个参数即可（旧签名 `(msg) => void` 仍然有效）。
  */
 export function feishuNotify(
   args: string[],
-  { channel = DEFAULT_CHANNEL, run = runSender, logger = log }: { channel?: string; run?: NotifyRunner; logger?: (msg: string) => void } = {},
+  {
+    channel = DEFAULT_CHANNEL,
+    run = runSender,
+    logger = defaultLogger,
+  }: { channel?: string; run?: NotifyRunner; logger?: NotifyLogger } = {},
 ): NotifyOutcome {
   const outcome = sendWithChannelFallback({ channel, args, run });
   const tail = args.join(' ').slice(0, 80);
@@ -283,14 +481,16 @@ export function feishuNotify(
     logger(
       `notify DEGRADED: 配置里没有 channel "${channel}"（原样：${first.stderr.trim().split('\n')[0].slice(0, 120)}）` +
         ` → 已去掉 --channel 重试并成功（走配置的 activeChannel；仍然没有任何内置地址）：${tail}`,
+      'error',
     );
   } else if (outcome.ok) {
-    logger(`notify ok: ${tail} -> ${outcome.attempts[0].stdout.trim().slice(0, 60)}`);
+    logger(`notify ok: ${tail} -> ${outcome.attempts[0].stdout.trim().slice(0, 60)}`, 'debug');
   } else {
     const last = outcome.attempts[outcome.attempts.length - 1];
     logger(
       `notify FAILED (${outcome.reason}, 尝试 ${outcome.attempts.length} 次, exit=${last.status}): ${tail}` +
         ` -> ${last.stderr.trim().slice(0, 300)}`,
+      'error',
     );
   }
   return outcome;
@@ -298,12 +498,13 @@ export function feishuNotify(
 
 // 标题 + 正文文件；正文永远非空（调用方保证），不出现裸的兜底文案
 function notifyCard(title: string, body: string, channel: string): void {
-  const tmp = `${process.env.HOME}/.local/share/opencode/feishu-msg-${process.pid}-${Date.now()}.txt`;
+  const tmp = `${HOME_DIR}/.local/share/opencode/feishu-msg-${process.pid}-${Date.now()}.txt`;
   try {
     writeFileSync(tmp, body.slice(0, MSG_MAX_LEN), 'utf8');
     feishuNotify(['--title', title, '--file', tmp], { channel });
   } catch (e) {
-    log('write msg file failed: ' + String(e));
+    // 写正文文件失败 = 这一条通知发不出去，属于"失败"，必须无条件可见（不是 DEBUG 细节）
+    logError('write msg file failed: ' + String(e));
   } finally {
     try {
       unlinkSync(tmp);
@@ -347,8 +548,10 @@ function shorten(text: string): string {
 
 // 「这轮是在问我」的启发式判定。只认强信号，宁可漏判也不要误判：
 // 把正常的收尾总结标成"等你决定"同样让人困惑。
+// 句末允许的收尾字符：半角引号、CJK 括号、**全角右引号**。
+// 全角 `”`/`’` 是 AI 写「……吗”」的常见收尾；缺了它们，一句提问会被判成"任务完成"（G4）。
 const QUESTION_PATTERNS = [
-  /[?？]["'）)」』]*\s*$/, // 末尾问号（允许尾部引号/括号）
+  /[?？]["'）)」』”’]*\s*$/, // 末尾问号（允许尾部引号/括号）
   /是否/,
   /要不要/,
   /需要你/,
@@ -356,7 +559,7 @@ const QUESTION_PATTERNS = [
   /请确认/,
   /你(来)?(确认|决定|选择)/,
   /(可以|好|行|对)吗/,
-  /吗\s*$/, // 句末「吗」在中文里只能结疑问句（注意别加「呢/吧」，它们能收陈述句）
+  /吗["'）)」』”’]*\s*$/, // 句末「吗」在中文里只能结疑问句（注意别加「呢/吧」，它们能收陈述句）
   /(有没有|有)(问题|异议|意见)吗/,
   /要我(继续|接着)?(做|执行|创建|改|删)/,
 ];
@@ -801,9 +1004,10 @@ export default Plugin.define({
           }
         }
       } catch (err) {
-        // AbortError 为正常退出（插件卸载）；其余错误记入日志
+        // AbortError 为正常退出（插件卸载）；其余错误记入日志。
+        // 事件流断了等于**此后不再有任何通知** —— 这是失败，不是 DEBUG 细节，必须无条件可见。
         if (!(err instanceof Error) || err.name !== 'AbortError') {
-          log('event stream error: ' + (err instanceof Error ? err.message : String(err)));
+          logError('event stream error（后续通知会中断，重启 opencode 可恢复）: ' + (err instanceof Error ? err.message : String(err)));
         }
       }
     })();

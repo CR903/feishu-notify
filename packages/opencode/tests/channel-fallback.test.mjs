@@ -13,7 +13,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -277,24 +277,28 @@ describe('feishuNotify：降级/放弃都写日志（可观测，不静默）', 
 		assert.match(lines[0], /HTTP 500/);
 	});
 
-	it('找不到发送端（ENOENT）→ 放弃并写明"需先安装 feishu-notify-cli"', () => {
-		// `NOTIFY_BIN` 在**模块加载时**由 $HOME 算出，所以必须在子进程里换 HOME 才能真正走到这条路径
-		// （也顺带证明真实的 execFileSync 分支确实产出自解释的 stderr，而不是一句 ENOENT）。
+	it('三个位置都找不到发送端 → **不 spawn**、放弃，并写明"需先安装 feishu-notify-cli"', () => {
+		// 发送端路径是在**调用时**解析的（G1），所以只换 HOME 不够：PATH 里也有一个候选。
+		// 这里把 HOME 指到空目录、PATH 指到空目录、并删掉 FEISHU_NOTIFY_BIN —— 三条路都堵死，
+		// 才能保证这条用例不会因为本机恰好装了发送端而**真的发一张卡出去**。
 		const src = pathToFileURL(join(PACKAGE_ROOT, 'src', 'feishu-notify.ts')).href;
+		const emptyBin = join(TMP, 'empty-bin');
+		mkdirSync(emptyBin, { recursive: true });
+		const env = { ...process.env, HOME: join(TMP, 'no-such-home'), PATH: emptyBin };
+		delete env.FEISHU_NOTIFY_BIN;
+
 		const code = `
 			import { feishuNotify } from ${JSON.stringify(src)};
 			const outcome = feishuNotify(['--title', 'T'], { channel: 'opencode', logger: (m) => console.log('LOG ' + m) });
 			console.log('REASON ' + outcome.reason + ' STATUS ' + outcome.attempts[0].status);
 		`;
-		const child = spawnSync(process.execPath, ['--input-type=module', '-e', code], {
-			encoding: 'utf8',
-			env: { ...process.env, HOME: join(TMP, 'no-such-home') },
-		});
+		const child = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', env });
 
 		assert.equal(child.status, 0, `${child.stdout}\n${child.stderr}`);
 		assert.match(child.stdout, /REASON failed STATUS -1/, '进程起不来时 status=-1，不会触发降级');
 		assert.match(child.stdout, /LOG notify FAILED \(failed, 尝试 1 次, exit=-1\)/);
 		assert.match(child.stdout, /找不到发送端/);
 		assert.match(child.stdout, /feishu-notify-cli/, '要指向"去装 CLI"这个下一步');
+		assert.match(child.stdout, /已找：/, '失败时必须列出找过哪些位置（否则用户不知道该往哪放）');
 	});
 });

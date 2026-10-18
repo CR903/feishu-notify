@@ -40,6 +40,10 @@ describe("模块冒烟：默认导出就是插件", () => {
 			'sendWithChannelFallback',
 			'feishuNotify',
 			'looksLikeQuestion',
+			'isExecutableFile',
+			'resolveNotifyBin',
+			'describeBinFailure',
+			'runSender',
 		]) {
 			assert.equal(typeof module[name], 'function', `${name} 应为导出函数`);
 		}
@@ -59,6 +63,11 @@ const CASES = [
 	['Ready to proceed?', true, '末尾?（半角）'],
 	['要覆盖这个文件吗？"', true, '末尾问号 + 尾部半角引号'],
 	['（需要我继续吗？）', true, '尾部括号内的问号'],
+	// ---- 正例：全角右引号收尾（G4 修复：AI 常写「……吗”」）
+	['这是你要的最终版本吗”', true, '句末「吗」+ 全角右双引号'],
+	['要覆盖这个文件吗？”', true, '末尾问号 + 全角右双引号'],
+	['要先跑测试吗？』', true, '末尾问号 + CJK 右双书名号'],
+	['要发版吗’', true, '句末「吗」+ 全角右单引号'],
 	// ---- 正例：是否 / 要不要
 	['是否允许执行 npm install？', true, '是否'],
 	['要不要我把这个分支合进 main', true, '要不要'],
@@ -128,24 +137,29 @@ describe('looksLikeQuestion：11 条模式逐条 + 反例（宁可漏判也不�
 });
 
 /**
- * 已知缺口：**不在本轮修**。
+ * G4（本轮修复）：`QUESTION_PATTERNS` 的句末规则原先只认半角 `"` / `'` 与 CJK 括号
+ * （`）)」』`），不认全角右引号 `”`。于是 `…吗”`（AI 用引号收尾的常见写法）会被判成
+ * "任务完成" —— 与用户抱怨的标题错位是同一类错误。
  *
- * `QUESTION_PATTERNS` 的"末尾问号"规则允许尾部引号，但只列了半角 `"` / `'` 与 CJK 括号
- * （`）)」』`），没有全角引号 `”`。于是 `…吗”`（AI 引号收尾）会被判成"任务完成"。
- *
- * 为什么留在这里不改：本轮的硬约束是"插件唯一改动 = 把 webhook 换成 channel"
- * （R1 / design §1）。改启发式会动到**卡片标题语义**（`❓ 等你决定` vs `✅ 任务完成`），
- * 属于另一个改动面，得单独评审。这里先把现状钉住，避免它被当成"测试没覆盖到"而无人知晓。
+ * 修复方式：把 `”` 与 `’` 加进**两条**句末规则的收尾字符集
+ * （末尾问号规则 + 句末「吗」规则；后者原先连半角引号都不允许）。
+ * 下面这组断言就是当时的缺口用例，现在翻转为"必须命中"。
  */
-describe('已知缺口（记录现状，不在本轮修）', () => {
-	it('全角右引号跟在问号/吗之后 → 判为"任务完成"（缺口，已上报）', () => {
-		assert.equal(looksLikeQuestion('这是你要的最终版本吗”'), false);
-		assert.equal(looksLikeQuestion('要覆盖这个文件吗？”'), false);
+describe('G4 已修复：全角右引号收尾不再被判成"任务完成"', () => {
+	it('全角右引号跟在「吗」/问号之后 → 判为"等你决定"', () => {
+		assert.equal(looksLikeQuestion('这是你要的最终版本吗”'), true);
+		assert.equal(looksLikeQuestion('要覆盖这个文件吗？”'), true);
 	});
 
-	it('同一句话用半角引号收尾 → 命中（说明缺口只在引号字符集）', () => {
+	it('半角引号与全角引号行为一致（缺口只在字符集，不在规则本身）', () => {
 		assert.equal(looksLikeQuestion('要覆盖这个文件吗？"'), true);
+		assert.equal(looksLikeQuestion('要覆盖这个文件吗？”'), true);
 		assert.equal(looksLikeQuestion('要我继续做吗”'), true, '"要我…做" 这条模式与尾部字符无关，仍然命中');
+	});
+
+	it('全角引号收尾的**陈述句**仍然不命中（修复没有放过反例）', () => {
+		assert.equal(looksLikeQuestion('任务已完成。”'), false);
+		assert.equal(looksLikeQuestion('就按这个方案来。’'), false);
 	});
 });
 
