@@ -13,9 +13,9 @@ webhook 在**发送前**按下表解析；一处都取不到就 `exit 2` 并给�
 
 > **本包在单仓中的位置。** `feishu-notify-cli` 是 `feishu-notify` 单仓里的 `packages/cli`
 > workspace（仓库级 README：[`../../README.zh-CN.md`](../../README.zh-CN.md)）。本文里以
-> `bin/`、`lib/`、`tests/` 开头的路径都相对**本包**。另两个适配器 workspace 中，
-> `packages/opencode` 已实现（插件，见 [`../opencode/README.zh-CN.md`](../opencode/README.zh-CN.md)）
-> 但尚未发布，`packages/dsh` 仍只有 README 占位。
+> `bin/`、`lib/`、`tests/` 开头的路径都相对**本包**。另两个适配器 workspace 都已实现、都尚未发布：
+> `packages/opencode`（插件，见 [`../opencode/README.zh-CN.md`](../opencode/README.zh-CN.md)）与
+> `packages/dsh`（DSH/Cordis bundle，见 [`../dsh/README.zh-CN.md`](../dsh/README.zh-CN.md)）。
 
 > **尚未发布到 npm。** 本次提交时 `GET https://registry.npmjs.org/feishu-notify-cli` 返回 404 —— 发布由父任务复审后统一进行。在此之前请从仓库里跑：
 >
@@ -43,10 +43,10 @@ webhook 在**发送前**按下表解析；一处都取不到就 `exit 2` 并给�
 - **不做卡片交互。** 按钮、回调、审批不在范围内；卡片是单向的。
 - **不做聚合、静音、定时。** 一个事件进，一张卡片出。
 - **不静默降级。** 缺配置就是报错（`exit 2`），这是刻意的 —— 见[安全](#安全)。代价是配置坏了会停通知，而不是悄悄发歪。
-- **`install` 还没覆盖全部目标。** `claude-code` 端到端可写；`opencode` 卡在插件包尚未发布（安装器拒绝把一个解析不出来的包名写进配置）；`dsh` 卡在适配器还不存在（安装器只探测 + 打印"将来会改成什么"并拒绝写入）。见[一键接线](#3-一键接线)。
+- **`install` 还没覆盖全部目标。** `claude-code` 端到端可写；`opencode` 与 `dsh` 都卡在各自的包尚未发布 —— 两者都已实现，但写盘前会用 `npm view` 预检包能否解析，解析不出来就拒绝写入，并打印"包一发布就会改成什么"的预览（`dsh` 另有 `--dsh-dev-dir` 本地联调口）。见[一键接线](#3-一键接线)。
 - **`install` 不代跑包管理器。** DSH 那条它只写 profile 清单，并把 `dsh plugin … pnpm install` 命令打出来让你自己执行；不自己跑 pnpm/npm 安装，`--dry-run` 的"零写入"才是它真能担保的性质。
 - **不支持 Windows。** 发送端是 bash + `curl` + `python3`；CLI 侧是 Node、可移植，发送端不是。
-- **没有 DSH 适配器。** 任何形式都还没有。
+- **不代你发布适配器包。** opencode / DSH 两个适配器都已实现，但都还没上 npm；`install` 只负责在你自己的配置里声明它们，发布由父任务统一进行。
 
 ## 环境要求
 
@@ -139,7 +139,7 @@ feishu-notify-cli install --yes         # 非交互
 |---|---|---|---|
 | `claude-code` | `~/.claude/settings.json` | 合并两组 hook：`Notification`（matcher `idle_prompt`）→ `feishu-notify --idle`，以及无 matcher 的 `Stop` → `feishu-notify --done`。保留用户既有 hook；按 command 字符串去重，并额外认"同事件同工具"，避免一个事件发两张卡 | ✅ 会写 |
 | `opencode` | `~/.config/opencode/opencode.json` | 往 `plugins` 追加 `opencode-feishu-notify`（默认对象形式 `{"package": …}`，或 `--opencode-form bare`）。带 `--channel <name>` 时条目会写成 `options: { "channel": "<name>" }`，让插件的路由意图明确落地、不被默认值覆盖 | ⛔ 包**解析不出来时拒绝写入**（写前用 `npm view` 实测），绝不留下半截配置 |
-| `dsh` | `~/.dsh/profiles/*/package.json` | 往 `dependencies` **与** `dsh.profile.bundles` 加这个包 | ⛔ **默认拒绝写入**（适配器包还不存在；bundle 引用了装不上的包会让 DSH 起不来）。它会打印确切的改动与 `dsh plugin … pnpm install` 命令；`--dsh-dev-dir <path>` 可切到 `link:<绝对路径>` 的联调接线 |
+| `dsh` | `~/.dsh/profiles/*/package.json` | 往 `dependencies` **与** `dsh.profile.bundles` 加这个包 | ⛔ 包**解析不出来时拒绝写入**（适配器已实现、尚未发布；写前用 `npm view` 实测 —— bundle 引用了装不上的包会让 DSH 起不来，比"没装"更糟）。它会打印确切的改动与 `dsh plugin … pnpm install` 命令；`--dsh-dev-dir <path>` 可切到 `link:<绝对路径>` 的联调接线（写本地路径，不走注册表预检） |
 
 以下保证都由 `tests/install.test.mjs` 断言：
 
@@ -342,7 +342,7 @@ note 里的内容是 [`footer`](#footer卡片底部) 配置值（这里取的是
 | 终端 / 任意脚本 | 直接调用 | ✅ 发送端已实测：5 组逐字节黄金样例、退出码矩阵、解析优先级 |
 | Claude Code | `~/.claude/settings.json` 的 hooks（`Notification`/`idle_prompt` → `--idle`，`Stop` → `--done`） | ✅ hooks 条目已装上、配置形状已核对。⚠ **hook 进程自身的 `PATH` 未直接观测** —— 发送端的解析器/解释器发现顺序是靠在测试里清洗 `PATH`（含一个假的 v14 `node`，用于证明它会被跳过）来等价验证的，见 `tests/sender-compat.test.mjs` |
 | opencode（v2，runtime 2.0.32） | `~/.config/opencode/plugins/` 下的插件 | ✅ 插件侧端到端实测：通知时机、标题判定、指标行、跨实例去重（细节见下）。✖ 打包产物 `opencode-feishu-notify` 尚未发布，第三方暂无安装路径 |
-| DSH（DeepSeek Harness） | profile bundle | ✖ 未实现 |
+| DSH（DeepSeek Harness） | profile bundle | ✅ 适配器已实现并实测：事件映射、审批、**需要你回答（阻塞 waterfall）**、工具失败、channel 路由（纯映射 + fake ctx harness + 真实 spawn 的 stub 可执行文件）。✖ 打包产物 `dsh-feishu-notify` 尚未发布，第三方暂无安装路径 |
 
 图例：✅ 已实测 · ⚠ 推断 / 未直接观测 · ✖ 未实现。
 
@@ -457,11 +457,11 @@ shasum -a 256 ~/.local/bin/feishu-notify    # 期望 0b788cf3…c52f1ebde（那�
 |---|---|
 | `install` → `claude-code` | ✅ 会写（合并两组 hook、按 command 去重、保留用户既有 hook） |
 | `install` → `opencode` | ⛔ `opencode-feishu-notify` 解析不出来时拒绝写入（写前用 `npm view` 实测）；`--no-verify` 可强制 |
-| `install` → `dsh` | ⛔ 默认拒绝（适配器包还不存在）；`--dsh-dev-dir` 打开 `link:<绝对路径>` 的联调接线 |
+| `install` → `dsh` | ⛔ 包解析不出来时拒绝写入（写前用 `npm view` 实测；适配器已实现、尚未发布）；`--dsh-dev-dir` 打开 `link:<绝对路径>` 的联调接线（不走注册表预检），`--no-verify` 可强制 |
 | `install` 代跑包管理器 | 刻意不做（见"它不做什么"）；只把确切的 `dsh plugin … pnpm install` 命令打印出来 |
 | `opencode-feishu-notify`（[`packages/opencode`](../opencode)） | ✅ **已实现**，未发布。插件行为、channel 降级、发送端解析均已实测；注册表往返要等发布 |
 | opencode 插件**声明语法** | ✅ **已实测**（2.0.32 的编译产物）：`plugins` 类型是 `Array<string \| {package, options}>`，两种写法归一化成同一个 target；裸字符串以 `-` 开头表示**移除**；非绝对路径的 target 由 opencode 自己的包管理器安装/解析，失败只会把插件标记为 failed，**不会**让 opencode 起不来。**尚未**实测的是注册表往返 —— 那需要包已发布 |
-| `dsh-feishu-notify`（`packages/dsh`，目前仅 README 占位） | 未实现 |
+| `dsh-feishu-notify`（[`packages/dsh`](../dsh)） | ✅ **已实现**，未发布。事件映射、**需要你回答的阻塞 waterfall**、工具失败与 channel 路由均已实测；注册表往返要等发布 |
 | Windows | 不在范围：发送端是 bash。移植需要照 Node CLI 的做法补一套黄金样例 |
 | 发布到 npm（三个包） | 未做 —— 刻意留给父任务 |
 | `permission.asked` 这条通知时机 | 至今仍未观测到它到达 |

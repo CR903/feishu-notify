@@ -14,9 +14,9 @@ Two commands ship in this package:
 > **Where this package lives.** `feishu-notify-cli` is the `packages/cli` workspace of the
 > `feishu-notify` monorepo (repo-root README: [`../../README.md`](../../README.md)). Paths in
 > this file that start with `bin/`, `lib/` or `tests/` are relative to **this package**.
-> The two adapter workspaces are `packages/opencode` — implemented (plugin,
-> [`README`](../opencode/README.md)) but not published yet — and `packages/dsh`, still a
-> README-only placeholder.
+> Both adapter workspaces are implemented and not published yet: `packages/opencode` (plugin,
+> [`README`](../opencode/README.md)) and `packages/dsh` (DSH/Cordis bundle,
+> [`README`](../dsh/README.md)).
 
 > **Not on npm yet.** `GET https://registry.npmjs.org/feishu-notify-cli` returns 404 as of this commit — publishing happens after review in the parent task. Until then, run the CLI from a clone:
 >
@@ -44,10 +44,10 @@ Two commands ship in this package:
 - **No card interactivity.** Buttons, callbacks and approvals are out of scope; cards are one-way.
 - **No aggregation, muting or scheduling.** One event in, one card out.
 - **No silent fallback.** Missing config is an error (`exit 2`). That is deliberate — see [Security](#security). The price is that a broken config stops notifications instead of degrading quietly.
-- **`install` does not cover everything yet.** `claude-code` is wired end to end. `opencode` is gated on the plugin package being published (the installer refuses to declare an unresolvable name), and `dsh` is gated on the adapter existing (the installer probes, prints the exact change it *would* make, and refuses to write). See [Wiring](#3-wire-up-your-agent-one-command).
+- **`install` does not cover everything yet.** `claude-code` is wired end to end. `opencode` and `dsh` are both gated on their package being published: both adapters are implemented, but the installer checks resolvability with `npm view` before writing, refuses when the name cannot be resolved, and prints the exact change it *would* make as a preview (`dsh` additionally has the `--dsh-dev-dir` local dev hook). See [Wiring](#3-wire-up-your-agent-one-command).
 - **`install` never runs a package manager.** For DSH it writes the profile manifest and prints the `dsh plugin … pnpm install` command for you to run; it does not execute pnpm/npm installs itself, so `--dry-run` staying write-free is a property the tool can actually guarantee.
 - **No Windows.** The sender is bash + `curl` + `python3`. The CLI side is Node and portable, the sender is not.
-- **No DSH adapter.** Not implemented in any form.
+- **Does not publish the adapter packages for you.** Both adapters (opencode, DSH) are implemented but not on npm yet; `install` only declares them in your own config — publication is handled centrally by the parent task.
 
 ## Requirements
 
@@ -144,7 +144,7 @@ What each target does today — measured, not aspirational:
 |---|---|---|---|
 | `claude-code` | `~/.claude/settings.json` | Merges two hook groups: `Notification` (matcher `idle_prompt`) → `feishu-notify --idle`, and a matcher-less `Stop` → `feishu-notify --done`. Existing hooks are kept; dedupe is by command string, plus "same event, same tool" so you never get two cards per event | ✅ writes |
 | `opencode` | `~/.config/opencode/opencode.json` | Appends `opencode-feishu-notify` to `plugins` (object form `{"package": …}` by default, or `--opencode-form bare`). With `--channel <name>` the entry carries `options: { "channel": "<name>" }`, so the plugin's routing intent is explicit instead of being covered by its default value | ⛔ **refuses** while the package is not resolvable (verified with `npm view`), so you never get a half-wired config |
-| `dsh` | `~/.dsh/profiles/*/package.json` | Adds the package to `dependencies` **and** `dsh.profile.bundles` | ⛔ **refuses by default** (the adapter package does not exist yet; a bundle that cannot resolve makes DSH fail to start). It prints the exact change and the `dsh plugin … pnpm install` command; `--dsh-dev-dir <path>` switches to a `link:<abs>` dev wiring |
+| `dsh` | `~/.dsh/profiles/*/package.json` | Adds the package to `dependencies` **and** `dsh.profile.bundles` | ⛔ **refuses while the package is not resolvable** (the adapter is implemented but not published; checked with `npm view` before writing — a bundle that cannot resolve makes DSH fail to start, which is worse than "not installed"). It prints the exact change and the `dsh plugin … pnpm install` command; `--dsh-dev-dir <path>` switches to a `link:<abs>` dev wiring (a local path, so the registry pre-check is skipped) |
 
 Guarantees, all of them asserted in `tests/install.test.mjs`:
 
@@ -355,7 +355,7 @@ in `tests/footer.test.mjs`). The webhook is **not** part of the payload (it is o
 | Terminal / any script | direct call | ✅ Sender measured: 5 byte-exact golden fixtures, exit-code matrix, resolution precedence |
 | Claude Code | `~/.claude/settings.json` hooks (`Notification`/`idle_prompt` → `--idle`, `Stop` → `--done`) | ✅ Hook entries installed and their shape verified. ⚠ The hook process's own `PATH` has **not** been directly observed — the sender's resolver/interpreter discovery was instead exercised under a sanitized `PATH` in `tests/sender-compat.test.mjs` (including a fake v14 `node`, to prove it is skipped) |
 | opencode (v2, runtime 2.0.32) | plugin in `~/.config/opencode/plugins/` | ✅ Plugin side measured end-to-end: notification timings, title rule, metrics line, cross-instance dedupe (details below). ✖ The packaged adapter `opencode-feishu-notify` is not published, so there is no install path for third parties yet |
-| DSH (DeepSeek Harness) | profile bundle | ✖ Not implemented |
+| DSH (DeepSeek Harness) | profile bundle | ✅ Adapter implemented and measured: event mapping, approvals, **user questions (blocking waterfall)**, tool failures, channel routing (pure mapping + fake-ctx harness + a real-spawn stub executable). ✖ The packaged `dsh-feishu-notify` is not published, so there is no install path for third parties yet |
 
 Legend: ✅ measured · ⚠ assumed / not directly observed · ✖ not implemented.
 
@@ -470,11 +470,11 @@ shasum -a 256 ~/.local/bin/feishu-notify    # expect 0b788cf3…c52f1ebde (that 
 |---|---|
 | `feishu-notify-cli install` → `claude-code` | ✅ writes (merges two hook groups, dedupe by command, keeps your hooks) |
 | `feishu-notify-cli install` → `opencode` | ⛔ refuses while `opencode-feishu-notify` is unresolvable (checked with `npm view` before writing); `--no-verify` overrides |
-| `feishu-notify-cli install` → `dsh` | ⛔ refuses by default (the adapter package does not exist yet); `--dsh-dev-dir` enables the `link:<abs>` dev wiring |
+| `feishu-notify-cli install` → `dsh` | ⛔ refuses while the package is unresolvable (checked with `npm view`; the adapter is implemented but not published); `--dsh-dev-dir` enables the `link:<abs>` dev wiring (which skips the registry pre-check), `--no-verify` overrides |
 | `install` running the package manager for you | Not done on purpose (see "What it does not do"); the exact `dsh plugin … pnpm install` command is printed instead |
 | `opencode-feishu-notify` ([`packages/opencode`](../opencode)) | ✅ **implemented**, not published. Plugin behaviour, channel degradation and sender resolution are measured; the registry round trip waits for publication |
 | opencode plugin **declaration syntax** | ✅ **measured** on the 2.0.32 binary: `plugins` is `Array<string \| {package, options}>`, both forms normalize to the same target, a bare `"-name"` string means *remove*, and a non-absolute target is installed/resolved by opencode's package manager (a failure only marks the plugin failed — it does not stop opencode). What is **not** measured is the registry round trip, which needs the package published |
-| `dsh-feishu-notify` (`packages/dsh`, placeholder only) | Not implemented |
+| `dsh-feishu-notify` ([`packages/dsh`](../dsh)) | ✅ **implemented**, not published. Event mapping, the **blocking user-questions waterfall**, tool failures and channel routing are measured; the registry round trip waits for publication |
 | Windows | Out of scope: the sender is bash. A port needs the golden-fixture treatment the Node CLI got |
 | Publishing to npm (all three packages) | Not done — deliberately deferred to the parent task |
 | `permission.asked` notification tier | Still never observed arriving |

@@ -56,7 +56,7 @@ compatibility, security model, rollback — lives in the package READMEs:
 
 - [`packages/cli/README.md`](./packages/cli/README.md) (English) · [`README.zh-CN.md`](./packages/cli/README.zh-CN.md) (中文)
 - [`packages/opencode/README.md`](./packages/opencode/README.md) (English) · [`README.zh-CN.md`](./packages/opencode/README.zh-CN.md) (中文)
-- [`packages/dsh/README.md`](./packages/dsh/README.md) (English)
+- [`packages/dsh/README.md`](./packages/dsh/README.md) (English) · [`README.zh-CN.md`](./packages/dsh/README.zh-CN.md) (中文)
 
 Quick version (install the CLI **globally** — two real binaries in one bin directory; do not point
 your wiring at a development checkout, which is how the 2026-10-18 rename made notifications fail

@@ -52,7 +52,7 @@
 
 - [`packages/cli/README.zh-CN.md`](./packages/cli/README.zh-CN.md)（中文）· [`README.md`](./packages/cli/README.md)（English）
 - [`packages/opencode/README.zh-CN.md`](./packages/opencode/README.zh-CN.md)（中文）· [`README.md`](./packages/opencode/README.md)（English）
-- [`packages/dsh/README.md`](./packages/dsh/README.md)（English）
+- [`packages/dsh/README.zh-CN.md`](./packages/dsh/README.zh-CN.md)（中文）· [`README.md`](./packages/dsh/README.md)（English）
 
 速览（**推荐全局安装**：产出真实的 bin，别让接线指向开发仓库路径 —— 2026-10-18 的仓库改名事故就是这么来的）：
 
