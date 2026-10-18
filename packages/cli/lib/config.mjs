@@ -25,6 +25,17 @@ export const CONFIG_FILE_NAME = "config.json";
 export const ENV_CONFIG_PATH = "FEISHU_NOTIFY_CONFIG";
 export const ENV_WEBHOOK = "FEISHU_NOTIFY_WEBHOOK";
 
+/**
+ * 卡片 footer 的**中性默认**（R9）。
+ *
+ * 改造前卡片底部硬编码的是作者公司的标识（`Smarterlab · <时间戳>`），那是"把个人/公司标识
+ * 烧进发布物"，不能发布。现在是配置项 `footer`，未配置时落在这个中性值上。
+ */
+export const DEFAULT_FOOTER = "feishu-notify";
+
+/** footer 长度上限（R9：≤40 字符；超出会让卡片底部挤成一坨，也会让 note 元素超长） */
+export const FOOTER_MAX_LENGTH = 40;
+
 /** 引导语：AC2 要求 stderr 必须含它 */
 export const INIT_GUIDANCE = "npx feishu-notify-cli init";
 
@@ -128,6 +139,47 @@ export function maskWebhook(value) {
 	return `${head}/${segments.slice(0, -1).join("/")}${segments.length > 1 ? "/" : ""}<REDACTED>`;
 }
 
+// ---------------------------------------------------------------- footer（R9）
+
+/**
+ * footer 取值校验：字符串、≤40 字符、**不含换行**（换行会把 note 元素撑破）。
+ * 空字符串是合法的 —— 语义是"只显示时间戳"。
+ */
+export function validateFooter(value, { source = "footer" } = {}) {
+	if (typeof value !== "string") {
+		throw new ConfigError(`${source} 必须是字符串（当前 ${typeof value}）`, { reason: "invalid-footer" });
+	}
+	if (value.length > FOOTER_MAX_LENGTH) {
+		throw new ConfigError(`${source} 过长：${value.length} 字符，上限 ${FOOTER_MAX_LENGTH}`, { reason: "invalid-footer" });
+	}
+	if (/[\r\n]/.test(value)) {
+		throw new ConfigError(`${source} 不能包含换行`, { reason: "invalid-footer" });
+	}
+	return value;
+}
+
+/**
+ * 解析最终 footer。返回 `{ footer, source }`：
+ *   - 配置里有 footer（含空串）→ 原样返回，source='config'（空串 = 只显示时间戳）
+ *   - 配置里没有 footer         → DEFAULT_FOOTER（中性），source='default'
+ *   - 配置自身缺失/坏           → 抛 ConfigError(exit 2)；调用方（发送端）据此回退到中性默认
+ *
+ * 注意：footer 是**装饰性**字段，发送端对它的态度是"尽力而为" ——
+ * 解析不出来就用中性默认继续发，绝不因为一个装饰字段让通知发不出去。
+ */
+export function resolveFooter({ env = process.env, configFilePath, config } = {}) {
+	const fromConfig = (raw, path) => {
+		if (raw === undefined) return { footer: DEFAULT_FOOTER, source: "default", path };
+		return { footer: validateFooter(raw), source: "config", path };
+	};
+
+	if (config !== undefined) return fromConfig(config.footer, configFilePath);
+
+	const loaded = readConfig({ env, path: configFilePath });
+	if (!loaded.ok) throw configLoadError(loaded);
+	return fromConfig(loaded.config.footer, loaded.path);
+}
+
 // ---------------------------------------------------------------- 读配置
 
 /**
@@ -193,6 +245,11 @@ export function validateConfigShape(raw) {
 	}
 	if (raw.activeChannel !== undefined && (typeof raw.activeChannel !== "string" || raw.activeChannel.trim() === "")) {
 		return { ok: false, message: "activeChannel 必须是非空字符串" };
+	}
+	// footer 只在**读取时**校验类型；长度/换行这类取值约束留到真正使用时（validateFooter），
+	// 这样用户手改出一个不合规的 footer 会降级成中性默认，而不会连带把 webhook 解析一起弄挂。
+	if (raw.footer !== undefined && typeof raw.footer !== "string") {
+		return { ok: false, message: "footer 必须是字符串" };
 	}
 	return { ok: true, config: raw };
 }
@@ -402,9 +459,13 @@ export function setActiveChannel(config, name) {
 	return next;
 }
 
-/** 浅拷贝 + channels 深一层，避免调用方拿到被改动的原件 */
+/** 浅拷贝 + channels 深一层，避免调用方拿到被改动的原件（footer 是顶层标量，随浅拷贝带走） */
 export function cloneConfig(config) {
 	const channels = {};
 	for (const [name, entry] of Object.entries(config.channels ?? {})) channels[name] = { ...entry };
-	return { version: config.version, ...(config.activeChannel !== undefined ? { activeChannel: config.activeChannel } : {}), channels };
+	const next = { version: config.version };
+	if (config.activeChannel !== undefined) next.activeChannel = config.activeChannel;
+	if (config.footer !== undefined) next.footer = config.footer;
+	next.channels = channels;
+	return next;
 }

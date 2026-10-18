@@ -20,15 +20,19 @@ import { createInterface } from "node:readline/promises";
 import {
 	CONFIG_VERSION,
 	ConfigError,
+	DEFAULT_FOOTER,
+	FOOTER_MAX_LENGTH,
 	assertChannelName,
 	configLoadError,
 	configPath,
 	maskWebhook,
 	readConfig,
 	removeChannel,
+	resolveFooter,
 	resolveWebhook,
 	setActiveChannel,
 	upsertChannel,
+	validateFooter,
 	validateWebhook,
 	writeConfig,
 } from "./config.mjs";
@@ -110,6 +114,12 @@ function configPathLine(file) {
 	return `  配置文件：${file}`;
 }
 
+/** footer 是人类可读的展示文本（不是密钥），可明文打印；空串含义特殊，单独标注 */
+function renderFooter(footer, { source } = {}) {
+	const shown = footer === "" ? "<空>（卡片只显示时间戳）" : footer;
+	return source ? `  footer：${shown}（source=${source}）` : `  footer：${shown}`;
+}
+
 /** 读配置，失败即抛带引导语的 ConfigError（exit 2） */
 function loadConfigOrThrow({ env }) {
 	const loaded = readConfig({ env });
@@ -161,7 +171,7 @@ async function readWebhookInput({ options, io }) {
 // ---------------------------------------------------------------- init
 
 function parseInitFlags(argv) {
-	const options = { nonInteractive: false, webhook: undefined, webhookFromStdin: false, channel: undefined, label: undefined, config: undefined, noVerify: false, force: false };
+	const options = { nonInteractive: false, webhook: undefined, webhookFromStdin: false, channel: undefined, label: undefined, footer: undefined, config: undefined, noVerify: false, force: false };
 	const rest = [];
 	for (let index = 0; index < argv.length; index += 1) {
 		const arg = argv[index];
@@ -180,6 +190,10 @@ function parseInitFlags(argv) {
 				break;
 			case "--label":
 				options.label = takeValue(argv, ++index, "--label");
+				break;
+			case "--footer":
+				// 允许显式传空串（= 只显示时间戳）：takeValue 只拒绝缺值/下一个是 flag
+				options.footer = takeValue(argv, ++index, "--footer");
 				break;
 			case "--config":
 				options.config = takeValue(argv, ++index, "--config");
@@ -206,6 +220,8 @@ export async function commandInit(argv, { env: baseEnv = process.env, io: rawIo,
 	const webhook = validateWebhook(await readWebhookInput({ options, io }), { source: options.webhookFromStdin ? "--webhook-stdin" : "--webhook" });
 	const name = assertChannelName(options.channel ?? "default");
 	const file = configPath({ env });
+	// footer 先校验再发卡：一个不合法的 --footer 不该先浪费一张测试卡片
+	const footerInput = options.footer !== undefined ? validateFooter(options.footer, { source: "--footer" }) : undefined;
 
 	const existing = readConfig({ env });
 	let config;
@@ -233,10 +249,14 @@ export async function commandInit(argv, { env: baseEnv = process.env, io: rawIo,
 		config = { version: CONFIG_VERSION, activeChannel: name, channels: { [name]: options.label !== undefined ? { webhook, label: options.label } : { webhook } } };
 	}
 
+	// --footer 给了就写（覆盖）；没给时，已有配置里的 footer 由 cloneConfig 原样保留
+	if (footerInput !== undefined) config = withFooter(config, footerInput);
+
 	say(io, "feishu-notify init");
 	say(io, configPathLine(file));
 	say(io, `  channel：${name}${options.label !== undefined ? `（label=${options.label}）` : ""}`);
 	say(io, `  webhook：${maskWebhook(webhook)}`);
+	say(io, renderFooter(config.footer ?? DEFAULT_FOOTER, { source: config.footer === undefined ? "default" : "config" }));
 
 	// 先验证，后落盘：验证失败什么都不写
 	if (!options.noVerify) {
@@ -278,6 +298,15 @@ function backupConfig(file) {
 	copyFileSync(file, backup);
 	chmodSync(backup, 0o600);
 	return backup;
+}
+
+/** 把 footer 放到 activeChannel 之后（键序固定，配置文件 diff 才可读） */
+function withFooter(config, footer) {
+	const next = { version: config.version };
+	if (config.activeChannel !== undefined) next.activeChannel = config.activeChannel;
+	next.footer = footer;
+	next.channels = config.channels;
+	return next;
 }
 
 function modeOf(file) {
@@ -366,6 +395,8 @@ function channelList(argv, { baseEnv, io }) {
 				{
 					configPath: path,
 					activeChannel: config.activeChannel ?? null,
+					footer: config.footer ?? DEFAULT_FOOTER,
+					footerSource: config.footer === undefined ? "default" : "config",
 					channels: Object.entries(config.channels).map(([name, entry]) => ({
 						name,
 						label: entry.label ?? null,
@@ -382,6 +413,7 @@ function channelList(argv, { baseEnv, io }) {
 
 	say(io, "feishu-notify channel list");
 	say(io, configPathLine(path));
+	say(io, renderFooter(config.footer ?? DEFAULT_FOOTER, { source: config.footer === undefined ? "default" : "config" }));
 	say(io, `  channels（${Object.keys(config.channels).length}）：`);
 	for (const line of renderChannels(config)) say(io, line);
 	say(io, "  （* = activeChannel；webhook 只显示掩码，明文只在配置文件里）");
@@ -486,7 +518,53 @@ function channelUsage() {
 		"  channel set-active <name>",
 		"",
 		"所有输出只显示掩码；真正的 webhook 明文只存在配置文件里（0600）。",
+		"卡片底部的 footer 用 `feishu-notify-cli footer` 查看（它不是密钥，可明文显示）。",
 	].join("\n");
+}
+
+// ---------------------------------------------------------------- footer
+
+function parseFooterFlags(argv) {
+	const options = { config: undefined, json: false };
+	const rest = [];
+	for (let index = 0; index < argv.length; index += 1) {
+		const arg = argv[index];
+		switch (arg) {
+			case "--config":
+				options.config = takeValue(argv, ++index, "--config");
+				break;
+			case "--json":
+				options.json = true;
+				break;
+			default:
+				rest.push(arg);
+		}
+	}
+	requireNoPositional(rest, "footer");
+	return options;
+}
+
+/**
+ * `footer` —— 给**发送端**用的取值入口：stdout 只放 footer 字符串（便于 bash 直接赋值）。
+ *
+ * 退出码语义刻意与 `resolve` 一致，因为发送端要能区分两种情况：
+ *   0 + stdout=""  → 配置里明确写了空 footer（只显示时间戳）
+ *   非 0           → 配置缺失/坏 → 发送端回退到中性默认 DEFAULT_FOOTER（绝不因此不发卡）
+ * `source=…` 打到 stderr，与 `resolve` 的风格一致。
+ */
+export function commandFooter(argv, { env: baseEnv = process.env, io: rawIo } = {}) {
+	const io = makeIo(rawIo);
+	const options = parseFooterFlags(argv);
+	const env = applyConfigOverride(baseEnv, options.config);
+
+	const resolved = resolveFooter({ env }); // 配置问题 → ConfigError(exit 2)
+	if (options.json) {
+		say(io, JSON.stringify({ ...resolved, default: DEFAULT_FOOTER, maxLength: FOOTER_MAX_LENGTH }, null, 2));
+		return 0;
+	}
+	say(io, resolved.footer); // 允许为空行：空 == 只显示时间戳
+	console.error(`source=${resolved.source}${resolved.path ? ` config=${resolved.path}` : ""}`);
+	return 0;
 }
 
 // ---------------------------------------------------------------- doctor
@@ -532,12 +610,20 @@ export async function commandDoctor(argv, { env: baseEnv = process.env, io: rawI
 	}
 
 	const envOverride = baseEnv.FEISHU_NOTIFY_WEBHOOK;
-	const report = { configPath: path, activeChannel: config.activeChannel ?? null, envOverride: envOverride ? maskWebhook(envOverride) : null, channels: [] };
+	const report = {
+		configPath: path,
+		activeChannel: config.activeChannel ?? null,
+		footer: config.footer ?? DEFAULT_FOOTER,
+		footerSource: config.footer === undefined ? "default" : "config",
+		envOverride: envOverride ? maskWebhook(envOverride) : null,
+		channels: [],
+	};
 
 	if (!options.json) {
 		say(io, "feishu-notify doctor");
 		say(io, configPathLine(path));
 		say(io, `  activeChannel：${config.activeChannel ?? "<未设置>"}`);
+		say(io, renderFooter(config.footer ?? DEFAULT_FOOTER, { source: config.footer === undefined ? "default" : "config" }));
 		say(io, `  channels（${Object.keys(config.channels).length}）：`);
 		for (const line of renderChannels(config)) say(io, line);
 		if (envOverride) {
@@ -605,14 +691,18 @@ export async function commandDoctor(argv, { env: baseEnv = process.env, io: rawI
 
 export function commandsUsage() {
 	return [
-		"  feishu-notify-cli init [--non-interactive] (--webhook <url> | --webhook-stdin) [--channel <name>] [--label <文本>] [--config <path>] [--no-verify] [--force]",
+		"  feishu-notify-cli init [--non-interactive] (--webhook <url> | --webhook-stdin) [--channel <name>] [--label <文本>] [--footer <文本>] [--config <path>] [--no-verify] [--force]",
 		"      交互式或在自动化里初始化配置；**先发测试卡片验证，验证失败不落盘**，成功后写 0600",
 		"  feishu-notify-cli channel list [--config <path>] [--json]",
 		"  feishu-notify-cli channel add <name> (--webhook <url> | --webhook-stdin) [--label <文本>] [--set-active] [--no-verify] [--force]",
 		"  feishu-notify-cli channel remove <name> [--force]",
 		"  feishu-notify-cli channel set-active <name>",
+		"  feishu-notify-cli footer [--config <path>] [--json]",
+		"      打印卡片底部要用的 footer（stdout 只放该字符串；source=… 打到 stderr）。配置问题 → exit 2，发送端据此回退到中性默认",
 		"  feishu-notify-cli doctor [--channel <name>] [--config <path>] [--json]",
 		"      读配置 → 逐 channel 发测试卡片 → 报告哪条通、哪条不通（全部输出均为掩码）",
+		"",
+		`卡片 footer 是配置项（顶层 footer，≤${FOOTER_MAX_LENGTH} 字符、不含换行）；未配置时用中性默认 "${DEFAULT_FOOTER}"。`,
 	].join("\n");
 }
 

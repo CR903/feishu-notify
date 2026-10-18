@@ -5,19 +5,19 @@
     "idle": {
       "exit": 0,
       "httpCode": 200,
-      "payloadSha256": "39f525fbd7a6b31050af9b03fc19f523c8e930a682c45535b7ad362a44dd889f",
+      "payloadSha256": "de89adbcc47b2153572c3c1a8f767a6accf722f1748e92dc4415c05eb0452697",
       "url": "https://open.feishu.cn/open-apis/bot/v2/hook/<REDACTED>"
     },
     "done": {
       "exit": 0,
       "httpCode": 200,
-      "payloadSha256": "216fae8c1c1027aaa520d7e2a7b5bae9bca6d8585328e4a996be3fbb44def1fe",
+      "payloadSha256": "f87b8cf2e39d59d6d9580825ac04329510c3cf2e001c945697755087d5dba3c1",
       "url": "https://open.feishu.cn/open-apis/bot/v2/hook/<REDACTED>"
     },
     "title-file": {
       "exit": 0,
       "httpCode": 200,
-      "payloadSha256": "08a0c5e5626c2140f23bb1b0785c59b5065557767cdb2e79b3a5f30d08debab6",
+      "payloadSha256": "6d308008eef44c01b6ea010c578096d893a9f759a45f17dedc2401abcdcd92a1",
       "url": "https://open.feishu.cn/open-apis/bot/v2/hook/<REDACTED>"
     },
     "text": {
@@ -29,7 +29,7 @@
     "bare": {
       "exit": 0,
       "httpCode": 200,
-      "payloadSha256": "368f07b2db609d9ec1709649a26eafc33742ad3aed147b349b226c712efbe609",
+      "payloadSha256": "5886a1de93fa032c4c3dcb26493437a60e979ab75954387e6d479d79120db4e7",
       "url": "https://open.feishu.cn/open-apis/bot/v2/hook/<REDACTED>"
     }
   }

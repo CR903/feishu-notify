@@ -17,9 +17,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, describe, it } from "node:test";
 
-import { HOOK_MARKER, findHookTokens, isAllowedToken, packFileList, scanRepository } from "../lib/secret-scan.mjs";
+import { HOOK_MARKER, findHookTokens, gitTopLevel, isAllowedToken, packFileList, scanRepository } from "../lib/secret-scan.mjs";
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), ".."); // = packages/cli（本包根）
+const MONO_ROOT = gitTopLevel(REPO_ROOT) ?? REPO_ROOT; // = 仓库根
 const TMP = mkdtempSync(join(tmpdir(), "feishu-notify-scan-"));
 after(() => rmSync(TMP, { recursive: true, force: true }));
 
@@ -75,9 +76,18 @@ describe("真实仓库扫描（本仓库）", () => {
 	it("扫描通过：git 索引 + pack 产物都干净", () => {
 		const result = scanRepository({ root: REPO_ROOT });
 		assert.deepEqual(result.hits, [], `本仓库不得含真实 hook：\n${JSON.stringify(result.hits, null, 2)}`);
-		assert.ok(result.scanned.includes("bin/feishu-notify"));
-		assert.ok(result.scanned.includes("lib/config.mjs"));
-		assert.ok(result.scanned.some((path) => path.startsWith("tests/fixtures/")), "fixtures 必须在扫描范围内");
+		assert.ok(result.scanned.includes("packages/cli/bin/feishu-notify"));
+		assert.ok(result.scanned.includes("packages/cli/lib/config.mjs"));
+		assert.ok(result.scanned.some((path) => path.startsWith("packages/cli/tests/fixtures/")), "fixtures 必须在扫描范围内");
+	});
+
+	it("单仓三包：索引锚点是仓库根，根目录与其它包不是盲区（R10 的闸门面）", () => {
+		const result = scanRepository({ root: REPO_ROOT });
+		assert.equal(result.root, MONO_ROOT, "扫描根应为 git 仓库根，而非 cwd");
+		// 这几处在 packages/cli 之外：从子目录跑 `git ls-files` 是看不见它们的
+		for (const path of ["package.json", "LICENSE", "README.md", "packages/opencode/README.md", "packages/dsh/README.md"]) {
+			assert.ok(result.scanned.includes(path), `${path} 必须在扫描范围内（闸门不得因分层而漏掉仓库根/其它包）`);
+		}
 	});
 
 	it("本机 live 指纹参与比对（本机存在硬编码地址时必须 >0）", () => {
@@ -93,6 +103,8 @@ describe("真实仓库扫描（本仓库）", () => {
 		assert.ok(files.some((path) => path.startsWith("lib/")), "pack 产物应含 lib/");
 		assert.ok(!files.includes("bin/feishu-notify.orig"), "改造前基线不进发布产物");
 		assert.ok(!files.some((path) => path.startsWith("tests/")), "测试不进发布产物");
+		// 单仓三包：发布产物不得夹带 monorepo 其它内容（根 README、别的包…）
+		assert.ok(!files.some((path) => path.includes("packages/")), `发布产物不得夹带其它包：${files.join(", ")}`);
 	});
 });
 

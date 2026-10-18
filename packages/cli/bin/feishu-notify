@@ -15,6 +15,10 @@
 #   feishu-notify --webhook "URL"  # 覆盖 webhook（最高优先，校验 https + 形状）
 #   feishu-notify --channel "name" # 用配置里的指定 channel（缺省用 activeChannel）
 #
+# 卡片底部: footer 是配置项（顶层 footer，≤40 字符、不含换行），取值走
+#   `feishu-notify-cli footer`；未配置时用中性默认 feishu-notify。
+#   配置里写成空串 "" 则只显示时间戳。footer 解析失败一律回退到中性默认（装饰字段不该拦住通知）。
+#
 # Hook 数据流: Claude Code 将 hook 数据通过 stdin 以 JSON 格式传入
 #   Stop hook → stdin: {"last_assistant_message":"...", ...}
 #   Notification idle → stdin: {"prompt":"...", ...}
@@ -32,6 +36,9 @@ set -euo pipefail
 WEBHOOK_URL=""          # 空 = 未用 --webhook 指定
 WEBHOOK_FROM_FLAG=0
 CHANNEL=""              # 空 = 用配置里的 activeChannel
+# footer：卡片底部文字，取值同样来自配置（`feishu-notify-cli footer`）；这里只是兜底默认
+DEFAULT_FOOTER="feishu-notify"
+FOOTER=""
 # ============================
 
 FILE=""
@@ -162,6 +169,7 @@ fi
   echo "  feishu-notify --done"
   echo ""
   echo "webhook 从配置解析（缺配置会提示先跑 npx feishu-notify-cli init）；诊断用 npx feishu-notify-cli doctor"
+  echo "卡片底部 footer 也是配置项（未配置时中性默认 feishu-notify）；查看：npx feishu-notify-cli footer"
   exit 1
 }
 
@@ -187,7 +195,13 @@ build_payload() {
     local title_text="${TITLE:-${SOURCE}通知}"
     local title_escaped; title_escaped=$(escape_json "$title_text")
     local msg_escaped; msg_escaped=$(escape_json "$MSG")
-    local ts; ts=$(date +%s)
+    local note_text
+    if [ -n "$FOOTER" ]; then
+      note_text="${FOOTER} · ${TIMESTAMP}"
+    else
+      note_text="$TIMESTAMP"
+    fi
+    local note_escaped; note_escaped=$(escape_json "$note_text")
 
     printf '{
       "msg_type":"interactive",
@@ -199,10 +213,10 @@ build_payload() {
         "elements":[
           {"tag":"markdown","content":"%s"},
           {"tag":"hr"},
-          {"tag":"note","elements":[{"tag":"plain_text","content":"Smarterlab · %s"}]}
+          {"tag":"note","elements":[{"tag":"plain_text","content":"%s"}]}
         ]
       }
-    }' "$title_escaped" "$msg_escaped" "$TIMESTAMP"
+    }' "$title_escaped" "$msg_escaped" "$note_escaped"
   fi
 }
 
@@ -259,6 +273,22 @@ resolver_error() {
   echo "   解析器是 Node 脚本，需要 Node >= ${NODE_MIN_MAJOR}；若提示 node 相关错误，用 FEISHU_NOTIFY_NODE 指定。" >&2
 }
 
+# 取卡片 footer（配置项 `footer`）。**尽力而为**：解析不出来就用中性默认，绝不因为一个装饰字段拦下通知。
+# stdout 只有 footer 字符串；配置里明确写成空串时输出为空（含义是"只显示时间戳"）。
+resolve_footer() {
+  local cli out
+  if ! cli=$(find_cli); then
+    printf '%s' "$DEFAULT_FOOTER"
+    return 0
+  fi
+  if [ -n "$NODE_BIN" ]; then
+    if out=$("$NODE_BIN" "$cli" footer 2>/dev/null); then printf '%s' "$out"; else printf '%s' "$DEFAULT_FOOTER"; fi
+  else
+    if out=$("$cli" footer 2>/dev/null); then printf '%s' "$out"; else printf '%s' "$DEFAULT_FOOTER"; fi
+  fi
+  return 0
+}
+
 # 输出解析结果到 stdout；失败时把自己的/解析器的提示写到 stderr，并返回 2（design §2 的退出码）
 resolve_webhook() {
   local cli resolved
@@ -295,6 +325,12 @@ resolve_webhook() {
 }
 
 WEBHOOK_URL=$(resolve_webhook) || exit 2
+
+# ========== 取卡片 footer（配置项；尽力而为，失败一律回退中性默认）==========
+# text 模式没有 note 元素，因此完全不查 footer —— 少一次 node 启动，也少一处能失败的地方。
+if [ "$MSG_TYPE" != "text" ]; then
+  FOOTER=$(resolve_footer)
+fi
 
 # 发送
 PAYLOAD=$(build_payload)

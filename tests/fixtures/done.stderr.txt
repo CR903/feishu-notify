@@ -1,2 +1,0 @@
-source=env webhook=https://open.feishu.cn/open-apis/bot/v2/hook/<REDACTED>
-stub-curl: got payload (423 bytes) -> https://open.feishu.cn/open-apis/bot/v2/hook/<REDACTED>

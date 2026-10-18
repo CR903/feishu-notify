@@ -15,10 +15,16 @@
 #     因此这里显式钉住解析输入，否则捕获结果会随"本机配置/环境"漂移：
 #       FEISHU_NOTIFY_CLI       = 仓库里的解析器（同目录解析优先，仍显式钉住避免依赖 cwd）
 #       FEISHU_NOTIFY_WEBHOOK   = 白名单样例地址 test-fixture-0001（env 优先级高于配置文件）
+#       FEISHU_NOTIFY_CONFIG    = 下面生成的固定配置文件 —— **只为了钉住 footer**（见下）
 #     webhook 值**不进 payload**，所以 payload 字节与"用哪个地址"无关 —— 这正是 AC4 比对的依据。
+#   - footer（R9）也是配置项，而它**会进 payload**（卡片 note）。若不钉住，捕获就会读本机
+#     ~/.config/feishu-notify/config.json 里的 `footer: "Smarterlab"`，fixtures 随机器漂移。
+#     所以这里把 FEISHU_NOTIFY_CONFIG 指向一个只含中性 footer 的固定配置（**不是** Smarterlab）。
+#     webhook 仍由 env 提供（优先级更高），这样 `source=env` 的既有断言逐字不变。
 #   - 落盘前把时间戳归一化为 <TIMESTAMP>（脚本里有 2 处：正文 footer 与卡片 note）。
 #   - 受控环境：清掉 TERM_PROGRAM/VSCODE_PID/ELECTRON_RUN_AS_NODE/CLAUDE_CODE_DESKTOP（否则
-#     "来源" 字段会随终端变化）、清掉 FEISHU_NOTIFY_CONFIG（禁止读本机真实配置）、固定 UTF-8 locale
+#     "来源" 字段会随终端变化）、把 FEISHU_NOTIFY_CONFIG 指向**本脚本生成的固定配置**（见上，
+#     只为了钉住 footer —— 绝不能读本机真实配置）、固定 UTF-8 locale
 #     与 PYTHONIOENCODING（脚本用 python3 解析 hook JSON，编码不稳定会让字节漂移）。
 #
 # 硬性保证:
@@ -33,7 +39,7 @@ MODE="check"
 case "${1:-}" in
   --update) MODE="update" ;;
   --check | "") MODE="check" ;;
-  --help | -h) sed -n '2,36p' "$0"; exit 0 ;;
+  --help | -h) sed -n '2,35p' "$0"; exit 0 ;;
   *) echo "未知参数: $1（用 --help）" >&2; exit 1 ;;
 esac
 
@@ -43,6 +49,8 @@ CLI="$ROOT/bin/feishu-notify-cli"
 FIXTURES="$ROOT/tests/fixtures"
 # 样例地址：test-* 前缀在密钥闸门（lib/secret-scan.mjs）白名单内，不是真实 token
 FIXTURE_WEBHOOK="https://open.feishu.cn/open-apis/bot/v2/hook/test-fixture-0001"
+# 钉住的 footer：用**中性默认值**（不是作者本机的 Smarterlab），R9/AC7 要求默认中性
+FIXTURE_FOOTER="feishu-notify"
 
 [ -f "$BIN" ] || { echo "❌ 找不到被测脚本: $BIN" >&2; exit 1; }
 [ -x "$CLI" ] || { echo "❌ 找不到可执行的解析器: $CLI" >&2; exit 1; }
@@ -52,6 +60,21 @@ OUT="$WORK/out"
 STUB_DIR="$WORK/bin"
 mkdir -p "$OUT" "$STUB_DIR"
 trap 'rm -rf "$WORK"' EXIT INT TERM
+
+# ---------- 钉住 footer 的固定配置 ----------
+# 只用于把 footer 钉死在中性值上；webhook 由 env 提供（优先级更高，见文件头说明）。
+FIXTURE_CONFIG="$WORK/fixture-config.json"
+cat > "$FIXTURE_CONFIG" <<JSON
+{
+  "version": 1,
+  "activeChannel": "default",
+  "footer": "$FIXTURE_FOOTER",
+  "channels": {
+    "default": { "webhook": "$FIXTURE_WEBHOOK" }
+  }
+}
+JSON
+chmod 600 "$FIXTURE_CONFIG"
 
 # ---------- 受控环境 ----------
 pick_utf8_locale() {
@@ -132,11 +155,12 @@ run_case() {
 
   set +e
   env -u TERM_PROGRAM -u VSCODE_PID -u ELECTRON_RUN_AS_NODE -u CLAUDE_CODE_DESKTOP \
-    -u FEISHU_NOTIFY_CHANNEL -u FEISHU_NOTIFY_CONFIG -u FEISHU_NOTIFY_CONFIG_UNDER_TEST \
+    -u FEISHU_NOTIFY_CHANNEL -u FEISHU_NOTIFY_CONFIG_UNDER_TEST \
     LC_ALL="$UTF8_LOCALE" LANG="$UTF8_LOCALE" PYTHONIOENCODING=utf-8 \
     FEISHU_STUB_OUT="$WORK" \
     FEISHU_NOTIFY_CLI="$CLI" \
     FEISHU_NOTIFY_WEBHOOK="$FIXTURE_WEBHOOK" \
+    FEISHU_NOTIFY_CONFIG="$FIXTURE_CONFIG" \
     PATH="$STUB_DIR:$PATH" \
     bash "$BIN" "$@" < "$stdin_file" > "$WORK/stdout" 2> "$WORK/stderr"
   code=$?

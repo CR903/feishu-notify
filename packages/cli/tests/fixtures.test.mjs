@@ -76,4 +76,15 @@ describe("AC4 黄金样例：改造前基线可重复生成", () => {
 			assert.ok(!stderr.includes("source=activeChannel"), `${name}: 不得依赖本机 activeChannel`);
 		}
 	});
+
+	it("footer 默认中性：4 组卡片 fixture 的 note 是 `feishu-notify · <TIMESTAMP>`（R9 的有意更新）", () => {
+		// harness 把 FEISHU_NOTIFY_CONFIG 钉在"中性 footer"的固定配置上（见 capture-fixtures.sh），
+		// 因此这里必须出现中性默认值。若哪天有人把它改回 Smarterlab（或忘了钉住），这条会失败。
+		for (const name of ["idle", "done", "title-file", "bare"]) {
+			const payload = JSON.parse(readFileSync(join(FIXTURES, `${name}.payload.json`), "utf8"));
+			const note = payload.card.elements.find((element) => element.tag === "note");
+			assert.equal(note.elements[0].content, "feishu-notify · <TIMESTAMP>", `${name}: footer 应为中性默认`);
+			assert.ok(!JSON.stringify(payload).includes("Smarterlab"), `${name}: 不得把作者/公司标识烧进 fixture`);
+		}
+	});
 });
