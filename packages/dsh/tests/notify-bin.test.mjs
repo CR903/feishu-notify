@@ -195,12 +195,16 @@ test('spawn 自身抛异常（ENOENT 之类）→ ERROR，不抛到调用方', (
 const STUB = `#!/bin/sh
 # 模拟内核 CLI 的 stdin 行为：stdin 不是一个已关闭的流就会一直等（原来的坑）
 cat - >/dev/null 2>&1 || true
-: > "$FEISHU_STUB_RECORD"
-for a in "$@"; do printf '%s\\n' "$a" >> "$FEISHU_STUB_RECORD"; done
+: > "$FEISHU_STUB_RECORD.tmp.$$"
+for a in "$@"; do printf '%s\\n' "$a" >> "$FEISHU_STUB_RECORD.tmp.$$"; done
+mv "$FEISHU_STUB_RECORD.tmp.$$" "$FEISHU_STUB_RECORD"
 exit 0
 `;
 
 async function waitForFile(file, deadlineMs = 5_000) {
+	// 注意：这里只能等"文件出现"，所以 stub 必须**原子落盘**（写临时文件再 rename）。
+	// 若 stub 像以前那样先 `: > file` 再逐行追加，读者会在文件刚出现、内容写到一半时读到残缺内容
+	// （2026-10-18 实测 1/10 抖动：actual=['--source'] vs expected 4 项）。
 	const started = Date.now();
 	while (Date.now() - started < deadlineMs) {
 		if (existsSync(file)) return true;
