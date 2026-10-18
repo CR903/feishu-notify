@@ -307,6 +307,108 @@ describe("install：opencode", () => {
 		assert.deepEqual(readJson(fixture.opencodeFile).plugins, ["opencode-feishu-notify"]);
 	});
 
+	// ---- G2：--channel 必须落进 options.channel（否则被插件默认值 + 降级静默覆盖）
+
+	it('--channel team → options.channel 写进去（对象形式）', () => {
+		const fixture = makeHome();
+		const result = runInstall(["--yes", "--target", "opencode", "--channel", "team"], { home: fixture.home });
+		assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+		assert.deepEqual(readJson(fixture.opencodeFile).plugins, [
+			{ package: "opencode-feishu-notify", options: { channel: "team" } },
+		]);
+		assert.match(result.stdout, /options\.channel/);
+	});
+
+	it("未给 --channel → **不写** options（保持用 activeChannel 的默认语义）", () => {
+		const fixture = makeHome();
+		runInstall(["--yes", "--target", "opencode"], { home: fixture.home });
+		const entry = readJson(fixture.opencodeFile).plugins[0];
+		assert.deepEqual(entry, { package: "opencode-feishu-notify" });
+		assert.equal(Object.hasOwn(entry, "options"), false, "没指定 channel 时不该凭空造一个 options");
+	});
+
+	it("带 --channel 幂等：连跑两次，第二次零变化且明确说已是这个 channel", () => {
+		const fixture = makeHome();
+		const args = ["--yes", "--target", "opencode", "--channel", "team"];
+
+		const first = runInstall(args, { home: fixture.home });
+		assert.equal(first.status, 0, `${first.stdout}\n${first.stderr}`);
+		const afterFirst = treeState(fixture.home);
+
+		const second = runInstall(args, { home: fixture.home });
+		assert.equal(second.status, 0, `${second.stdout}\n${second.stderr}`);
+		assert.equal(treeState(fixture.home), afterFirst, "第二次必须一个字节都不变（含不新增 .bak）");
+		assert.match(second.stdout, /options\.channel 已是 "team"/);
+		assert.deepEqual(readJson(fixture.opencodeFile).plugins, [
+			{ package: "opencode-feishu-notify", options: { channel: "team" } },
+		]);
+	});
+
+	it("已有 {package} 条目 + --channel → 就地补 options，不追加第二条，其它插件原样保留", () => {
+		const fixture = makeHome({
+			opencode: { plugins: [{ package: "someone-else" }, { package: "opencode-feishu-notify" }] },
+		});
+		const result = runInstall(["--yes", "--target", "opencode", "--channel", "team"], { home: fixture.home });
+		assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+		assert.deepEqual(readJson(fixture.opencodeFile).plugins, [
+			{ package: "someone-else" },
+			{ package: "opencode-feishu-notify", options: { channel: "team" } },
+		]);
+	});
+
+	it("已有条目的其它 options 键不会被 --channel 吃掉", () => {
+		const fixture = makeHome({
+			opencode: { plugins: [{ package: "opencode-feishu-notify", options: { channel: "old", keep: true } }] },
+		});
+		runInstall(["--yes", "--target", "opencode", "--channel", "team"], { home: fixture.home });
+		assert.deepEqual(readJson(fixture.opencodeFile).plugins, [
+			{ package: "opencode-feishu-notify", options: { channel: "team", keep: true } },
+		]);
+	});
+
+	it("已有条目 + **未给** --channel → 原样不动（不推断用户想删掉 channel）", () => {
+		const fixture = makeHome({
+			opencode: { plugins: [{ package: "opencode-feishu-notify", options: { channel: "team" } }] },
+		});
+		const before = treeState(fixture.home);
+		const result = runInstall(["--yes", "--target", "opencode"], { home: fixture.home });
+		assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+		assert.equal(treeState(fixture.home), before);
+		assert.deepEqual(readJson(fixture.opencodeFile).plugins, [
+			{ package: "opencode-feishu-notify", options: { channel: "team" } },
+		]);
+	});
+
+	it("--opencode-form bare + --channel → 升级成对象形式（裸串放不下 options，意图不丢）", () => {
+		const fixture = makeHome();
+		const result = runInstall(["--yes", "--target", "opencode", "--opencode-form", "bare", "--channel", "team"], {
+			home: fixture.home,
+		});
+		assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+		assert.deepEqual(readJson(fixture.opencodeFile).plugins, [
+			{ package: "opencode-feishu-notify", options: { channel: "team" } },
+		]);
+		assert.match(result.stdout, /裸字符串表达不了 options/);
+	});
+
+	it("已有裸字符串条目 + --channel → 就地升级为对象形式（不是再追加一条）", () => {
+		const fixture = makeHome({ opencode: { plugins: ["opencode-feishu-notify"] } });
+		const result = runInstall(["--yes", "--target", "opencode", "--channel", "team"], { home: fixture.home });
+		assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+		assert.deepEqual(readJson(fixture.opencodeFile).plugins, [
+			{ package: "opencode-feishu-notify", options: { channel: "team" } },
+		]);
+	});
+
+	it("--channel 名字不合法 → 用法错误，一个字节都不写", () => {
+		const fixture = makeHome();
+		const before = treeState(fixture.home);
+		const result = runInstall(["--yes", "--target", "opencode", "--channel", "bad name"], { home: fixture.home });
+		assert.equal(result.status, 1);
+		assert.match(result.stderr, /--channel 不合法/);
+		assert.equal(treeState(fixture.home), before, "拒绝时不能留下半份配置");
+	});
+
 	it("两种形态互相视为已接线：先对象后裸串不再重复声明", () => {
 		const fixture = makeHome({ opencode: { plugins: [{ package: "opencode-feishu-notify" }] } });
 		const before = treeState(fixture.home);

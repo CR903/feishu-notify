@@ -28,6 +28,20 @@
  *
  * 默认用**对象形式**（`{"package": …}`）：语义最明确、且留了 `options` 的位置。要改风格用
  * `--opencode-form bare`。两种写法都实现、都由测试锁定，所以这不是"二选一放弃另一个"。
+ *
+ * ## `--channel <name>` → `options.channel`（G2）
+ *
+ * 用户显式指定 channel 的意图，**必须落到插件的 options 里**，否则会被插件默认值
+ * （`opencode`）+ "配置里没有就降级到 activeChannel" 静默覆盖 —— 用户以为钉住了机器人，
+ * 实际发的却是另一个。所以：
+ *
+ *   - `--channel team` → `{"package":"opencode-feishu-notify","options":{"channel":"team"}}`
+ *   - 不给 `--channel` → 条目里**不写 options**（保持"用 activeChannel"的默认语义）
+ *   - 已有条目、且这次给了 `--channel` → 就地更新 options.channel（保留其它 options 键）
+ *   - 已有条目、且这次没给 `--channel` → 原样不动（不因为"这次没带 flag"就删掉用户的设置）
+ *
+ * 裸字符串表达不了 options：`--opencode-form bare` 与 `--channel` 同时给时自动升级为对象形式，
+ * 并在计划里写明原因（默默丢掉 channel 正是要修的那个缺陷）。
  */
 
 import { statSync } from "node:fs";
@@ -39,6 +53,11 @@ import { cloneJson, isPlainObject, makePlan, pathsFromEnv, prettyPath, readJsonF
 export const id = "opencode";
 export const label = "opencode";
 export const PACKAGE_NAME = "opencode-feishu-notify";
+/**
+ * 插件自己的默认 channel（`DEFAULT_CHANNEL` in packages/opencode/src/feishu-notify.ts）。
+ * 这里只用于计划说明（"你不写 options 时插件会先要这个名字"），不是一个可配置项。
+ */
+export const DEFAULT_PLUGIN_CHANNEL = "opencode";
 
 /** 写入形态：`object`（默认）或 `bare`（裸字符串）。两者解析等价，见文件头。 */
 export const FORMS = ["object", "bare"];
@@ -62,10 +81,43 @@ export function entryTarget(entry) {
 	return null;
 }
 
-export function entryFor(form = DEFAULT_FORM) {
-	if (form === "bare") return PACKAGE_NAME;
-	if (form === "object") return { package: PACKAGE_NAME };
-	throw new Error(`内部错误：未知的 opencode 写入形态 ${form}`);
+/** 只留"名字"：空串/纯空白/非字符串 → undefined。地址永远不会走到这里。 */
+export function normalizeChannel(value) {
+	if (typeof value !== "string") return undefined;
+	const name = value.trim();
+	return name === "" ? undefined : name;
+}
+
+/** 条目里已有的 `options.channel`（认不出来 → undefined；其它 options 键一概不碰） */
+export function channelOf(entry) {
+	if (!isPlainObject(entry) || !isPlainObject(entry.options)) return undefined;
+	return normalizeChannel(entry.options.channel);
+}
+
+/**
+ * 写入形态：
+ *   object + channel → `{package, options:{channel}}`
+ *   object            → `{package}`
+ *   bare              → `"opencode-feishu-notify"`（裸字符串没有 options 的位置）
+ *
+ * 所以 `bare` + channel 只可能产出对象形式；调用方（buildPlan）会把这个升级写进计划说明。
+ */
+export function entryFor(form = DEFAULT_FORM, channel = undefined) {
+	if (!FORMS.includes(form)) throw new Error(`内部错误：未知的 opencode 写入形态 ${form}`);
+	const name = normalizeChannel(channel);
+	if (form === "bare" && name === undefined) return PACKAGE_NAME;
+	return name === undefined ? { package: PACKAGE_NAME } : { package: PACKAGE_NAME, options: { channel: name } };
+}
+
+/**
+ * 把已有条目改写成"带 options.channel"的对象形式。
+ * - 对象形式：只合并 `options.channel`，其它 options 键与条目字段原样保留
+ * - 裸字符串：没有位置放 options → 升级成对象（与 `entryFor` 的产物同形）
+ */
+function upgradeEntry(entry, channel) {
+	if (!isPlainObject(entry) || typeof entry.package !== "string") return entryFor(DEFAULT_FORM, channel);
+	const options = isPlainObject(entry.options) ? entry.options : {};
+	return { ...entry, options: { ...options, channel } };
 }
 
 function dirExists(dir) {
@@ -194,10 +246,50 @@ export function buildPlan({ env = process.env, options = {} } = {}) {
 
 	const entries = doc.plugins ?? [];
 	const notes = [];
+	const channel = normalizeChannel(options.channel);
 	const existing = entries.find((entry) => entryTarget(entry) === PACKAGE_NAME);
+
 	if (existing !== undefined) {
-		notes.push(`plugins 里已经有 ${PACKAGE_NAME}（原文 ${JSON.stringify(existing)}），不再重复声明`);
-		return makePlan({ ...base, status: "noop", notes });
+		const current = channelOf(existing);
+
+		// 本次没给 --channel：不推断"用户想删掉原来的 channel"，原样保留
+		if (channel === undefined) {
+			notes.push(`plugins 里已经有 ${PACKAGE_NAME}（原文 ${JSON.stringify(existing)}），不再重复声明`);
+			return makePlan({ ...base, status: "noop", notes });
+		}
+		if (current === channel) {
+			notes.push(`plugins 里已经有 ${PACKAGE_NAME}，且 options.channel 已是 "${channel}"，不再改动`);
+			return makePlan({ ...base, status: "noop", notes });
+		}
+
+		// 给了 --channel：把意图落到**已有那条**上（就地改，不追加第二条）
+		const index = entries.indexOf(existing);
+		const upgraded = upgradeEntry(existing, channel);
+		const next = cloneJson(doc);
+		next.plugins = entries.map((entry, i) => (i === index ? upgraded : entry));
+
+		if (typeof existing === "string") {
+			notes.push("原条目是裸字符串（表达不了 options）→ 升级为对象形式，让 --channel 有地方落");
+		} else if (isPlainObject(existing) && existing.options !== undefined && !isPlainObject(existing.options)) {
+			notes.push(`原条目的 options 不是对象（${JSON.stringify(existing.options)}）→ 按对象重写（原值见 before）`);
+		} else if (current !== undefined) {
+			notes.push(`options.channel 由 "${current}" 改为 "${channel}"（--channel 是这次显式给的）`);
+		}
+		notes.push(`只改 ${PACKAGE_NAME} 这一条，plugins 里其它 ${entries.length - 1} 条原样保留`);
+
+		return makePlan({
+			...base,
+			status: "ok",
+			steps: [
+				{
+					title: `plugins：把 ${PACKAGE_NAME} 的 options.channel 设为 "${channel}"`,
+					before: JSON.stringify(existing),
+					after: JSON.stringify(upgraded),
+				},
+			],
+			notes,
+			files: [{ path: file, before: parsed.text, after: serializeJson(next) }],
+		});
 	}
 
 	const removal = entries.find((entry) => entryTarget(entry) === `-${PACKAGE_NAME}`);
@@ -209,13 +301,22 @@ export function buildPlan({ env = process.env, options = {} } = {}) {
 		notes.push(`plugins 里有 ${unrecognized.length} 条本工具认不出的条目（原样保留）：${JSON.stringify(unrecognized)}`);
 	}
 
-	const entry = entryFor(form);
+	const entry = entryFor(form, channel);
 	const next = cloneJson(doc);
 	next.plugins = [...entries, entry];
 	notes.push(
 		"写法：两种形态在解析层等价（实测 opencode 2.0.32：裸字符串与 {package} 归一化成同一个 target）；" +
-			`本次写的是 ${form === "bare" ? "裸字符串" : "对象形式"}，换风格用 --opencode-form ${form === "bare" ? "object" : "bare"}`,
+			`本次写的是 ${entry === PACKAGE_NAME ? "裸字符串" : "对象形式"}，换风格用 --opencode-form ${entry === PACKAGE_NAME ? "object" : "bare"}`,
 	);
+	if (channel !== undefined) {
+		notes.push(
+			`已把 --channel "${channel}" 写进 options.channel（插件默认是 "${DEFAULT_PLUGIN_CHANNEL}"；` +
+				"不给这个 flag 时条目里不写 options，由插件落到配置的 activeChannel）",
+		);
+		if (form === "bare") {
+			notes.push("裸字符串表达不了 options → 已改用对象形式（--channel 的意图优先于写法偏好；两种写法在解析层等价）");
+		}
+	}
 	notes.push("写入前会用 `npm view` 确认这个包能被解析；解析不出来就拒绝写入（不给 opencode 留一条 failed 插件）");
 
 	return makePlan({

@@ -13,8 +13,9 @@ webhook 在**发送前**按下表解析；一处都取不到就 `exit 2` 并给�
 
 > **本包在单仓中的位置。** `feishu-notify-cli` 是 `feishu-notify` 单仓里的 `packages/cli`
 > workspace（仓库级 README：[`../../README.zh-CN.md`](../../README.zh-CN.md)）。本文里以
-> `bin/`、`lib/`、`tests/` 开头的路径都相对**本包**。另两个适配器 workspace
-> （`packages/opencode`、`packages/dsh`）只有 README 占位，不发布。
+> `bin/`、`lib/`、`tests/` 开头的路径都相对**本包**。另两个适配器 workspace 中，
+> `packages/opencode` 已实现（插件，见 [`../opencode/README.zh-CN.md`](../opencode/README.zh-CN.md)）
+> 但尚未发布，`packages/dsh` 仍只有 README 占位。
 
 > **尚未发布到 npm。** 本次提交时 `GET https://registry.npmjs.org/feishu-notify-cli` 返回 404 —— 发布由父任务复审后统一进行。在此之前请从仓库里跑：
 >
@@ -137,7 +138,7 @@ feishu-notify-cli install --yes         # 非交互
 | 目标 | 探测 | 动作 | 状态 |
 |---|---|---|---|
 | `claude-code` | `~/.claude/settings.json` | 合并两组 hook：`Notification`（matcher `idle_prompt`）→ `feishu-notify --idle`，以及无 matcher 的 `Stop` → `feishu-notify --done`。保留用户既有 hook；按 command 字符串去重，并额外认"同事件同工具"，避免一个事件发两张卡 | ✅ 会写 |
-| `opencode` | `~/.config/opencode/opencode.json` | 往 `plugins` 追加 `opencode-feishu-notify`（默认对象形式 `{"package": …}`，或 `--opencode-form bare`） | ⛔ 包**解析不出来时拒绝写入**（写前用 `npm view` 实测），绝不留下半截配置 |
+| `opencode` | `~/.config/opencode/opencode.json` | 往 `plugins` 追加 `opencode-feishu-notify`（默认对象形式 `{"package": …}`，或 `--opencode-form bare`）。带 `--channel <name>` 时条目会写成 `options: { "channel": "<name>" }`，让插件的路由意图明确落地、不被默认值覆盖 | ⛔ 包**解析不出来时拒绝写入**（写前用 `npm view` 实测），绝不留下半截配置 |
 | `dsh` | `~/.dsh/profiles/*/package.json` | 往 `dependencies` **与** `dsh.profile.bundles` 加这个包 | ⛔ **默认拒绝写入**（适配器包还不存在；bundle 引用了装不上的包会让 DSH 起不来）。它会打印确切的改动与 `dsh plugin … pnpm install` 命令；`--dsh-dev-dir <path>` 可切到 `link:<绝对路径>` 的联调接线 |
 
 以下保证都由 `tests/install.test.mjs` 断言：
@@ -148,7 +149,8 @@ feishu-notify-cli install --yes         # 非交互
 - 单个目标失败不影响其它目标，失败会带自己的错误与回滚指令。
 - 目标文件是符号链接时**一律不写**（写穿会改到 dotfiles 真身，替换链接又会毁掉布局）—— 安装器拒绝，并告诉你它指向哪里。
 
-`--channel <name>` 只有你显式传了才会附加到 hook 上；默认不附加，发送端走 `activeChannel`。
+`--channel <name>` 只有你显式传了才会写进配置：Claude Code 附加到 hook 命令上，opencode 写进
+`options.channel`。默认两边都不带 channel，发送端走 `activeChannel`。
 
 ### 4. 手动接线
 
@@ -177,7 +179,7 @@ feishu-notify-cli install --yes         # 非交互
 
 说明：hook handler 走 shell 形式（`sh -c`），所以 `~` 会被展开、`--idle` / `--done` 能拿到 stdin 上的 hook JSON。想把这条目标固定到某个机器人就加 `--channel <name>`（例如 `--channel claude`）；不加则用 `activeChannel`。`timeout` 的数值是从本机可用配置里原样抄来的 —— Claude Code 现行文档把这个字段描述为**秒**，请按你的版本再核对一次。`install` 写的是**裸命令名**而不是 `~/.local/bin/…`，这样 hook 走 `PATH`、也不会因为仓库改名而悬空。
 
-**opencode** —— opencode 会自动加载 `~/.config/opencode/{plugin,plugins}/*.{ts,js}`（本机 runtime 2.0.32 实测），也会读 `opencode.json` 里的 `plugins` 数组。发通知的那个插件属于独立包 `opencode-feishu-notify`，**尚未发布**；适配器要做的事就是调用发送端、让 CLI 去解析 channel：
+**opencode** —— opencode 会自动加载 `~/.config/opencode/{plugin,plugins}/*.{ts,js}`（本机 runtime 2.0.32 实测），也会读 `opencode.json` 里的 `plugins` 数组。发通知的插件已在 `packages/opencode` 实现（[`opencode-feishu-notify`](../opencode/README.zh-CN.md)），但**尚未发布**；它做的事就是调用发送端、让 CLI 去解析 channel：
 
 ```sh
 feishu-notify --channel opencode --source opencode --title "…" --file /tmp/msg.txt
@@ -455,7 +457,7 @@ shasum -a 256 ~/.local/bin/feishu-notify    # 期望 0b788cf3…c52f1ebde（那�
 | `install` → `opencode` | ⛔ `opencode-feishu-notify` 解析不出来时拒绝写入（写前用 `npm view` 实测）；`--no-verify` 可强制 |
 | `install` → `dsh` | ⛔ 默认拒绝（适配器包还不存在）；`--dsh-dev-dir` 打开 `link:<绝对路径>` 的联调接线 |
 | `install` 代跑包管理器 | 刻意不做（见"它不做什么"）；只把确切的 `dsh plugin … pnpm install` 命令打印出来 |
-| `opencode-feishu-notify`（`packages/opencode`，目前仅 README 占位） | 包未发布；适配器的 channel 接线与安装路径都随它一起落地 |
+| `opencode-feishu-notify`（[`packages/opencode`](../opencode)） | ✅ **已实现**，未发布。插件行为、channel 降级、发送端解析均已实测；注册表往返要等发布 |
 | opencode 插件**声明语法** | ✅ **已实测**（2.0.32 的编译产物）：`plugins` 类型是 `Array<string \| {package, options}>`，两种写法归一化成同一个 target；裸字符串以 `-` 开头表示**移除**；非绝对路径的 target 由 opencode 自己的包管理器安装/解析，失败只会把插件标记为 failed，**不会**让 opencode 起不来。**尚未**实测的是注册表往返 —— 那需要包已发布 |
 | `dsh-feishu-notify`（`packages/dsh`，目前仅 README 占位） | 未实现 |
 | Windows | 不在范围：发送端是 bash。移植需要照 Node CLI 的做法补一套黄金样例 |

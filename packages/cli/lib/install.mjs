@@ -24,6 +24,7 @@ import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 
 import { CommandError } from "./errors.mjs";
+import { CHANNEL_NAME_PATTERN } from "./config.mjs";
 import { makeIo, say, takeValue } from "./io.mjs";
 import { applyPlan, backupStamp, pathsFromEnv, prettyPath, rollbackCommand } from "./install-targets/common.mjs";
 import { TARGETS, findTargetByName, targetLabelList } from "./install-targets/index.mjs";
@@ -92,6 +93,18 @@ export function parseInstallFlags(argv) {
 	if (!FORMS.includes(options.opencodeForm)) {
 		throw new CommandError(`--opencode-form 只接受 ${FORMS.join(" / ")}（当前 ${JSON.stringify(options.opencodeForm)}）`, { reason: "usage" });
 	}
+	if (options.channel !== undefined) {
+		// 这个名字会被写进 hook 命令与 opencode 的 options.channel，两边都要求同一个形状；
+		// 在写盘前拒绝，免得留下一份"看着接好了、实际解析不了"的配置。
+		const name = String(options.channel).trim();
+		if (!CHANNEL_NAME_PATTERN.test(name)) {
+			throw new CommandError(
+				`--channel 不合法：${JSON.stringify(options.channel)}\n  只允许字母/数字开头，后接字母、数字、._-（最长 64 字符）`,
+				{ reason: "usage" },
+			);
+		}
+		options.channel = name;
+	}
 	for (const name of [...options.targets, ...options.skip]) {
 		if (!findTargetByName(name)) throw new CommandError(`未知目标：${name}（可用：${TARGETS.map((target) => target.id).join(", ")}）`, { reason: "usage" });
 	}
@@ -116,7 +129,7 @@ export function installUsage() {
 		"  --yes                跳过确认（非交互环境必须给）",
 		"  --target <t>        只处理这些目标（逗号分隔；名字或别名，如 claude）",
 		"  --skip <t>          跳过这些目标（逗号分隔）",
-		"  --channel <name>    把 --channel <name> 附加到写入的 hook 上（默认不附加，走 activeChannel）",
+		"  --channel <name>    把 channel 名字落进配置：claude-code 写成 `--channel <name>`，opencode 写进 options.channel（默认不写，走 activeChannel）",
 		`  --opencode-form <f> opencode 的声明形态：${FORMS.join(" / ")}（默认 ${DEFAULT_FORM}；两种在解析层等价，见 lib/install-targets/opencode.mjs）`,
 		"  --dsh-dev-dir <p>   DSH 联调：用 link:<绝对路径> 指向本地 checkout（默认拒绝写 DSH profile）",
 		"  --no-verify         跳过写入前的预检（opencode 的包可解析性）",
