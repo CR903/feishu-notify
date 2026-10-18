@@ -183,3 +183,27 @@ npm workspaces（根 `package.json` 为 `private`）：
 密钥闸门（`lib/secret-scan.mjs`）同步修正：索引扫描锚点改为 `git rev-parse --show-toplevel`，
 因此从 `packages/cli` 跑也只扫"整个仓库索引 + 本包 pack 产物"，根目录与另两个包不再是盲区
 （此前从子目录跑 `git ls-files` 只看得到本包）。
+
+## 7. `install` 三目标 + 接线自检（Step 4 / R11，2026-10-18）
+
+新增（都在 `packages/cli/lib/` 下，未改动发送端的任何行为）：
+
+| 文件 | 职责 |
+|---|---|
+| `install-targets/common.mjs` | 计划与执行分离、`*.bak.<时间戳>`、temp+rename 原子写、符号链接拒绝写 |
+| `install-targets/claude-code.mjs` | 合并两条 hook（按 command 去重 + "同事件同工具"的等价判重） |
+| `install-targets/opencode.mjs` | `plugins` 数组声明（两种形态）、写前 `npm view` 可解析性预检 |
+| `install-targets/dsh.mjs` | profile 的 `dependencies` + `dsh.profile.bundles`；默认**拒绝写**，`--dsh-dev-dir` 联调 |
+| `install.mjs` | 探测 → 计划 → 确认 → 逐目标执行 → 结果表 + 回滚指令 |
+| `wiring.mjs` | 接线自检（发送端 → 解析器 → Node ≥ 18），用 `lstat` 区分"悬空符号链接"与"不存在" |
+| `errors.mjs` / `io.mjs` | `CommandError` 与 I/O 小工具从 `commands.mjs` 抽出，供 `install.mjs` 复用（打断循环依赖） |
+
+**与 §4.2 里那条 live 符号链接的关系（这是 R11 的由来）**：
+`~/.local/bin/feishu-notify-cli -> <仓库>/packages/cli/bin/feishu-notify-cli` 在仓库改名时曾经悬空，
+导致发送端 `exit 2`、通知静默失效。§6 已经把它重新指好，但**这类布局本身就是隐患**：
+它把生产接线绑在开发仓库的位置上。因此
+
+- `install` 写进 hook 的是**裸命令名** `feishu-notify`（走 `PATH`），不写任何绝对路径；
+- `doctor` 会把这条链逐环查一遍，悬空链接会被点名并给出 `rm` + `npm i -g` 的修法；
+- README 的安装章节明确**推荐全局安装**（产出真实 bin）。
+

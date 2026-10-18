@@ -9,7 +9,7 @@ webhook 在**发送前**按下表解析；一处都取不到就 `exit 2` 并给�
 | 命令 | 运行时 | 职责 |
 |---|---|---|
 | `feishu-notify` | bash | 发送端。把卡片或纯文本 POST 到解析出的 webhook。hooks 与 agent 插件调用的就是它。 |
-| `feishu-notify-cli` | Node ≥ 18 | 配置与诊断：`resolve` / `init` / `channel` / `doctor` / `footer`。 |
+| `feishu-notify-cli` | Node ≥ 18 | 配置与诊断：`resolve` / `init` / `channel` / `doctor` / `footer` / `install`。 |
 
 > **本包在单仓中的位置。** `feishu-notify-cli` 是 `feishu-notify` 单仓里的 `packages/cli`
 > workspace（仓库级 README：[`../../README.zh-CN.md`](../../README.zh-CN.md)）。本文里以
@@ -30,7 +30,8 @@ webhook 在**发送前**按下表解析；一处都取不到就 `exit 2` 并给�
 | 发送 | 互动卡片（标题 + markdown 正文）或纯文本；正文可来自参数或文件 |
 | Hook 模式 | `--hook` / `--idle` / `--done` 读 stdin 上的 hook JSON（`last_assistant_message`、`prompt`），并追加来源与时间戳页脚 |
 | 自我配置 | `init` 先发一张测试卡片，**卡片送达了才落盘** |
-| 自我诊断 | `doctor` 逐 channel 真实发卡，报告哪条通、哪条不通 |
+| 自我诊断 | `doctor` 先查真实 hook 会走的那条**接线链**（发送端 → 解析器 → Node ≥ 18，含悬空符号链接），再逐 channel 真实发卡 |
+| 自我接线 | `install` 把 hook/插件声明幂等地合并进探测到的 agent（`claude-code` / `opencode` / `dsh`），每个被改的文件留 `*.bak.<时间戳>` |
 | 多 channel | 具名 channel（`default` / `opencode` / `claude`…）配一个 `activeChannel`；调用方也可以按目标指定 channel |
 | 卡片底部归你 | 卡片底部那行是配置项 `footer`（≤40 字符、不含换行）。不配置 → 中性默认 `feishu-notify`；配成 `""` → 只显示时间戳 |
 | 不泄露密钥 | 所有输出都是掩码；`npm test` 里的密钥闸门会扫描源码与 `npm pack` 产物中的真实 hook token |
@@ -41,7 +42,8 @@ webhook 在**发送前**按下表解析；一处都取不到就 `exit 2` 并给�
 - **不做卡片交互。** 按钮、回调、审批不在范围内；卡片是单向的。
 - **不做聚合、静音、定时。** 一个事件进，一张卡片出。
 - **不静默降级。** 缺配置就是报错（`exit 2`），这是刻意的 —— 见[安全](#安全)。代价是配置坏了会停通知，而不是悄悄发歪。
-- **还没有一键 `install`。** `feishu-notify-cli install` 只是个命令名，执行后 `exit 1` 报"未实现"。当前接线靠手工（[手动接线](#3-手动接线)）。
+- **`install` 还没覆盖全部目标。** `claude-code` 端到端可写；`opencode` 卡在插件包尚未发布（安装器拒绝把一个解析不出来的包名写进配置）；`dsh` 卡在适配器还不存在（安装器只探测 + 打印"将来会改成什么"并拒绝写入）。见[一键接线](#3-一键接线)。
+- **`install` 不代跑包管理器。** DSH 那条它只写 profile 清单，并把 `dsh plugin … pnpm install` 命令打出来让你自己执行；不自己跑 pnpm/npm 安装，`--dry-run` 的"零写入"才是它真能担保的性质。
 - **不支持 Windows。** 发送端是 bash + `curl` + `python3`；CLI 侧是 Node、可移植，发送端不是。
 - **没有 DSH 适配器。** 任何形式都还没有。
 
@@ -65,6 +67,30 @@ webhook 在**发送前**按下表解析；一处都取不到就 `exit 2` 并给�
 
 ## 快速开始
 
+### 0. 先装 CLI 本体（**推荐全局安装**，这一步很关键）
+
+```sh
+npm i -g feishu-notify-cli      # 产出两个真实的 bin
+```
+
+**为什么是全局安装，而不是从仓库跑或长期靠 `npx`。** hook 依赖的那条接线是"`PATH` 上有个
+`feishu-notify`，它能在自己旁边找到 `feishu-notify-cli`"。全局安装产出的正是这个布局：两个真实文件
+并排在同一个 bin 目录里。
+
+**绝不能发生的是：线上接线依赖某个"开发仓库路径"。** 2026-10-18 本仓库改名，而
+`~/.local/bin/feishu-notify-cli` 是指向它的符号链接：链接悬空 → 发送端 `exit 2` → 通知**静默失效**
+（报错只存在于 hook 进程里，没人看得见）。现在 `doctor` 能诊断这个状态（[接线健康](#接线健康-r11)），
+结构化上的解法就是别让生产指向工作副本 —— 所以安装器写进 hook 的是裸命令名 `feishu-notify`
+（走 `PATH`），而不是任何绝对路径。
+
+试用时从仓库里跑没问题：
+
+```sh
+node packages/cli/bin/feishu-notify-cli doctor      # 在仓库根跑
+```
+
+但别把 hook 接到那个路径上。
+
 ### 1. 配置
 
 ```sh
@@ -87,11 +113,47 @@ feishu-notify-cli init --non-interactive --webhook "$URL" --no-verify   # 跳过
 feishu-notify-cli doctor
 ```
 
-`doctor` 读配置 → 逐 channel 真发一张卡 → 打印 `结论：N/M 通`；只要有一条不通就 `exit 1`。`doctor --json` 输出同样内容的 JSON。
+`doctor` 按顺序做两件事：
 
-### 3. 手动接线
+1. **接线自检** —— 走一遍真实 hook 会走的那条链（发送端 → 解析器 → Node ≥ 18），每个候选都用
+   `lstat` 分类，所以**悬空符号链接**会被报成"悬空符号链接"而不是"不存在"，并直接打印修法
+   （`rm` 掉坏链接 + `npm i -g feishu-notify-cli`）。
+2. **逐 channel 可达性** —— 真发卡片，打印 `结论：N/M 通`；有通道不通就 `exit 1`。卡片带的是
+   **当前生效的 footer**，所以你在测试卡上看到的外观就是真实通知的外观。
 
-安装器还没实现，所以现在靠手工。下面两条路径调的都是**发送端**，webhook 由它自己解析。
+接线自检**刻意不改变退出码**：hook 跑在 agent 的环境里（`PATH`/`HOME` 都不同），所以这里的 ✗ 是
+强力的可执行警告，而不是"通道坏了"的定论。`doctor --json` 里的 `wiring` 给人/脚本用。
+
+### 3. 一键接线
+
+```sh
+feishu-notify-cli install --dry-run     # 只打印计划，零写入
+feishu-notify-cli install               # 问一次确认，然后写
+feishu-notify-cli install --yes         # 非交互
+```
+
+三个目标今天各自能做到什么（**实测，不是愿景**）：
+
+| 目标 | 探测 | 动作 | 状态 |
+|---|---|---|---|
+| `claude-code` | `~/.claude/settings.json` | 合并两组 hook：`Notification`（matcher `idle_prompt`）→ `feishu-notify --idle`，以及无 matcher 的 `Stop` → `feishu-notify --done`。保留用户既有 hook；按 command 字符串去重，并额外认"同事件同工具"，避免一个事件发两张卡 | ✅ 会写 |
+| `opencode` | `~/.config/opencode/opencode.json` | 往 `plugins` 追加 `opencode-feishu-notify`（默认对象形式 `{"package": …}`，或 `--opencode-form bare`） | ⛔ 包**解析不出来时拒绝写入**（写前用 `npm view` 实测），绝不留下半截配置 |
+| `dsh` | `~/.dsh/profiles/*/package.json` | 往 `dependencies` **与** `dsh.profile.bundles` 加这个包 | ⛔ **默认拒绝写入**（适配器包还不存在；bundle 引用了装不上的包会让 DSH 起不来）。它会打印确切的改动与 `dsh plugin … pnpm install` 命令；`--dsh-dev-dir <path>` 可切到 `link:<绝对路径>` 的联调接线 |
+
+以下保证都由 `tests/install.test.mjs` 断言：
+
+- `--dry-run` 零写入，而且它打印的计划就是真跑执行的那份**数据**。
+- 每个被改的文件都先留 `<file>.bak.<时间戳>`；结束时打印 `cp -p …` 回滚指令。
+- 连跑两次，第二次**没有任何文件变化**（树哈希断言，也不新增备份）。
+- 单个目标失败不影响其它目标，失败会带自己的错误与回滚指令。
+- 目标文件是符号链接时**一律不写**（写穿会改到 dotfiles 真身，替换链接又会毁掉布局）—— 安装器拒绝，并告诉你它指向哪里。
+
+`--channel <name>` 只有你显式传了才会附加到 hook 上；默认不附加，发送端走 `activeChannel`。
+
+### 4. 手动接线
+
+安装器覆盖了上面那些路径；这一节留给它拒绝时你手改，也作为"安装器到底写了什么"的参考。
+下面两条路径调的都是**发送端**，webhook 由它自己解析。
 
 **Claude Code** —— `~/.claude/settings.json`，把两条 hooks 合并进去。下面是作者本机上已装的那两条，逐字抄来：
 
@@ -113,15 +175,15 @@ feishu-notify-cli doctor
 }
 ```
 
-说明：hook handler 走 shell 形式（`sh -c`），所以 `~` 会被展开、`--idle` / `--done` 能拿到 stdin 上的 hook JSON。想把这条目标固定到某个机器人就加 `--channel <name>`（例如 `--channel claude`）；不加则用 `activeChannel`。`timeout` 的数值是从本机可用配置里原样抄来的 —— Claude Code 现行文档把这个字段描述为**秒**，请按你的版本再核对一次。
+说明：hook handler 走 shell 形式（`sh -c`），所以 `~` 会被展开、`--idle` / `--done` 能拿到 stdin 上的 hook JSON。想把这条目标固定到某个机器人就加 `--channel <name>`（例如 `--channel claude`）；不加则用 `activeChannel`。`timeout` 的数值是从本机可用配置里原样抄来的 —— Claude Code 现行文档把这个字段描述为**秒**，请按你的版本再核对一次。`install` 写的是**裸命令名**而不是 `~/.local/bin/…`，这样 hook 走 `PATH`、也不会因为仓库改名而悬空。
 
-**opencode** —— opencode 会自动加载 `~/.config/opencode/plugins/*.{ts,js}`（本机 runtime 2.0.32 实测）。发通知的那个插件属于独立包 `opencode-feishu-notify`，**尚未发布**；适配器要做的事就是调用发送端、让 CLI 去解析 channel：
+**opencode** —— opencode 会自动加载 `~/.config/opencode/{plugin,plugins}/*.{ts,js}`（本机 runtime 2.0.32 实测），也会读 `opencode.json` 里的 `plugins` 数组。发通知的那个插件属于独立包 `opencode-feishu-notify`，**尚未发布**；适配器要做的事就是调用发送端、让 CLI 去解析 channel：
 
 ```sh
 feishu-notify --channel opencode --source opencode --title "…" --file /tmp/msg.txt
 ```
 
-在那个包发布之前，第三方没有 opencode 的安装路径。**不要**拷贝作者本机的 `feishu-notify.ts`：那个文件里还带着个人 webhook。见[未实现 / Roadmap](#未实现--roadmap)。
+包发布之后 `install` 会替你声明它（见[一键接线](#3-一键接线)）；在那之前它会拒绝写入。**不要**拷贝作者本机的 `feishu-notify.ts`：那个文件里还带着个人 webhook。见[未实现 / Roadmap](#未实现--roadmap)。
 
 ## 配置参考
 
@@ -200,11 +262,40 @@ channel 名必须匹配 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`。`channel remove` �
 | `init [--non-interactive] (--webhook <u> \| --webhook-stdin) [--channel <n>] [--label <t>] [--footer <t>] [--config <p>] [--no-verify] [--force]` | 写配置；先发卡验证，卡片失败就**什么都不写** |
 | `channel list [--json]` / `add <n> …` / `remove <n> [--force]` / `set-active <n>` | 管理 channel |
 | `footer [--config <p>] [--json]` | 把生效的卡片 footer 打印到 stdout（`source=…` 走 stderr）。配置不可用时 `exit 2` —— 发送端据此回退到中性默认 |
-| `doctor [--channel <n>] [--json]` | 逐 channel 实测可达性 |
+| `doctor [--channel <n>] [--json]` | 接线自检（发送端 → 解析器 → Node，含悬空符号链接）+ 逐 channel 实测可达性 |
+| `install [--dry-run] [--yes] [--target <t>…\|--skip <t>…] [--channel <n>] [--opencode-form <f>] [--dsh-dev-dir <p>] [--no-verify]` | 探测本机已装的 agent 并幂等接线；`--dry-run` 只打印计划、零写入 |
 | `help`、`version` | — |
-| `install` | **未实现** → `exit 1` |
 
 退出码：`0` 成功 · `1` 用法错误或运行期失败（卡片没发出去、channel 已存在…）· `2` 配置问题。`--webhook-stdin` 的存在是为了让从文件读来的地址不出现在 `ps` 输出里；它与 `--webhook` 互斥。
+
+`install` 在以下情况 `exit 1`：有目标失败；该做的全被拒绝；或你用 `--target` 明确点名的目标被跳过/拒绝。
+
+### 接线健康（R11）
+
+hook 实际会走的那条链有三环，而且**每一环坏掉都可能是静默的** —— 报错落在 agent 的 hook 进程里，
+不在你的终端上：
+
+```
+hook → feishu-notify（发送端）→ feishu-notify-cli（解析器）→ Node ≥ 18
+```
+
+`doctor` 按这个顺序走一遍，候选的解析顺序与 `bin/feishu-notify` 完全一致
+（`$FEISHU_NOTIFY_CLI` → 发送端同目录 → `$HOME/.local/bin` → `PATH`，然后是 Node 的搜索顺序），
+并用 `lstat` 分类：**悬空符号链接**会被报成悬空符号链接，而不是"不存在" —— 这两者的修法完全不同：
+
+```text
+  ▸ 接线自检（真实 hook 走的那条链：发送端 → 解析器 → Node ≥ 18）…
+    ✓ 发送端        ~/.local/bin/feishu-notify
+    ✗ 解析器        <找不到>
+        ✗ ~/.local/bin/feishu-notify-cli：悬空符号链接 → ~/project/改名后的仓库/bin/feishu-notify-cli（目标不存在）
+    ✓ Node ≥ 18    ~/.nvm/versions/node/v22.23.2/bin/node（v22.23.2）
+    修复：
+      - ~/.local/bin/feishu-notify-cli 是悬空符号链接（→ …）：rm … 然后 `npm i -g feishu-notify-cli`
+      - 发送端找不到解析器 feishu-notify-cli：装一次即可 — `npm i -g feishu-notify-cli`
+```
+
+被后面候选兜住的坏候选照样打印：它今天能用，`PATH` 一变就静默失效。`doctor --json` 用 `wiring`
+暴露同一份数据；这项检查不会改变退出码，`tests/wiring.test.mjs` 把这条契约锁住了。
 
 ### `feishu-notify`（发送端）
 
@@ -328,14 +419,16 @@ npm run fixtures:update  # 用新捕获覆盖 tests/fixtures/*
 | `tests/config-resolution.test.mjs` | 优先级矩阵、各失败分支、`0600`/`0700`/原子写、掩码、隔离守卫 |
 | `tests/sender-compat.test.mjs` | bash 侧的优先级与退出码矩阵、解析器发现顺序、Node 解释器选择、payload 与 webhook 来源无关 |
 | `tests/fixtures.test.mjs` | 黄金样例可逐字节重现；其 note 带中性默认 footer |
-| `tests/footer.test.mjs` | footer 的校验/解析/CLI、`init --footer`、`channel`/`doctor` 展示，以及"只有 note 会变"的外科手术式属性 |
+| `tests/footer.test.mjs` | footer 的校验/解析/CLI、`init --footer`、`channel`/`doctor` 展示、**自检卡片带当前 footer**，以及"只有 note 会变"的外科手术式属性 |
+| `tests/install.test.mjs` | 模拟 `HOME` 下三个安装目标的端到端：探测、合并、去重、拒绝分支、opencode 两种写法、`--dry-run` 零写入、树哈希幂等、单目标失败隔离、回滚指令、退出码 |
 | `tests/init.test.mjs` | `init`、`channel`、`doctor`、`lib/sender.mjs`、隔离守卫 |
+| `tests/wiring.test.mjs` | `classify()`（含**悬空符号链接**）、`checkWiring()` 的四个场景、`doctor` 的接线输出与退出码契约 |
 | `tests/secret-scan.test.mjs` | token 识别、全仓库扫描、注入自证、live 指纹交叉 |
 | `tests/live.test.mjs` | 真实网络往返 —— 未设 `FEISHU_NOTIFY_LIVE=1` 时跳过 |
 
 `tests/fixtures/` 存的是**改造前**发送端的 payload 基线（stub `curl`，五组输入：`--idle`、`--done`、`--title X --file`、`--text`、裸文本）。改配置解析时它们必须逐字节一致（时间戳归一化后），这也是它们留在仓库里的原因：它们是"发送端没变"的定义。此后**唯一**有意的改动就是卡片 footer（R9）：note 从作者硬编码的 `Smarterlab ·` 变成中性默认，同时 harness 把 `footer` 钉死在这个中性值上，捕获结果因此不会随开发机漂移。只有确实要改这个行为时才用 `npm run fixtures:update` 重新捕获。
 
-环境变量：`FEISHU_NOTIFY_LIVE=1`（开启 live 套件）、`FEISHU_NOTIFY_CURL`（curl 路径）、`FEISHU_NOTIFY_CONFIG`（配置路径）、`FEISHU_NOTIFY_CLI` / `FEISHU_NOTIFY_NODE`（发送端用的解析器与解释器）。
+环境变量：`FEISHU_NOTIFY_LIVE=1`（开启 live 套件）、`FEISHU_NOTIFY_CURL`（curl 路径）、`FEISHU_NOTIFY_CONFIG`（配置路径）、`FEISHU_NOTIFY_CLI` / `FEISHU_NOTIFY_NODE`（发送端用的解析器与解释器）、`FEISHU_NOTIFY_NPM`（`install` 预检用的 npm 可执行文件；测试指向替身）。
 
 ### 回滚
 
@@ -347,15 +440,20 @@ cp -p ~/.local/bin/feishu-notify.pre-config.bak ~/.local/bin/feishu-notify   # �
 shasum -a 256 ~/.local/bin/feishu-notify    # 期望 0b788cf3…c52f1ebde（那份里还是旧的内置地址）
 ```
 
-仓库里的 `bin/feishu-notify.orig` 是**脱敏**基线：只能用来 diff，不能用来回滚。安装器就位后各 agent 的配置会各自留 `*.bak.<时间戳>`；在那之前，请自己备份你要改的文件。
+仓库里的 `bin/feishu-notify.orig` 是**脱敏**基线：只能用来 diff，不能用来回滚。
+
+`install` 会为自己碰过的每个文件打印回滚指令（一行 `cp -p <file>.bak.<时间戳> <file>`）。每个目标都只往它列出的文件里**追加**内容，所以恢复备份同时也撤掉了后续运行加进去的东西。
 
 ## 未实现 / Roadmap
 
 | 项 | 状态 |
 |---|---|
-| `feishu-notify-cli install`（opencode / Claude Code / DSH 三目标，幂等、`--dry-run`、写前备份） | 命令存在，执行即 `exit 1` 报"未实现" |
+| `install` → `claude-code` | ✅ 会写（合并两组 hook、按 command 去重、保留用户既有 hook） |
+| `install` → `opencode` | ⛔ `opencode-feishu-notify` 解析不出来时拒绝写入（写前用 `npm view` 实测）；`--no-verify` 可强制 |
+| `install` → `dsh` | ⛔ 默认拒绝（适配器包还不存在）；`--dsh-dev-dir` 打开 `link:<绝对路径>` 的联调接线 |
+| `install` 代跑包管理器 | 刻意不做（见"它不做什么"）；只把确切的 `dsh plugin … pnpm install` 命令打印出来 |
 | `opencode-feishu-notify`（`packages/opencode`，目前仅 README 占位） | 包未发布；适配器的 channel 接线与安装路径都随它一起落地 |
-| opencode "配置里声明包名即自动安装" | **未验证**。`config.d.ts` 把 `plugins` 类型写成 `Array<string \| { package, options }>`，但裸字符串究竟按 npm 包名还是本地路径解析尚不可知 —— 只有包进了 registry 才能实测 |
+| opencode 插件**声明语法** | ✅ **已实测**（2.0.32 的编译产物）：`plugins` 类型是 `Array<string \| {package, options}>`，两种写法归一化成同一个 target；裸字符串以 `-` 开头表示**移除**；非绝对路径的 target 由 opencode 自己的包管理器安装/解析，失败只会把插件标记为 failed，**不会**让 opencode 起不来。**尚未**实测的是注册表往返 —— 那需要包已发布 |
 | `dsh-feishu-notify`（`packages/dsh`，目前仅 README 占位） | 未实现 |
 | Windows | 不在范围：发送端是 bash。移植需要照 Node CLI 的做法补一套黄金样例 |
 | 发布到 npm（三个包） | 未做 —— 刻意留给父任务 |

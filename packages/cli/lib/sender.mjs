@@ -13,13 +13,19 @@
 
 import { spawnSync } from "node:child_process";
 
-import { maskWebhook } from "./config.mjs";
+import { DEFAULT_FOOTER, maskWebhook } from "./config.mjs";
 
 export const DEFAULT_CURL = "curl";
 export const DEFAULT_CURL_TIMEOUT_MS = 15_000;
 
-/** 测试卡片的 payload。**不含** webhook 明文（只有掩码），也不含任何密钥。 */
-export function testCardPayload({ channelName, label, webhook, timestamp = nowStamp() } = {}) {
+/**
+ * 测试卡片的 payload。**不含** webhook 明文（只有掩码），也不含任何密钥。
+ *
+ * `footer` 是"当前生效的 footer"（`init` / `doctor` 传进来）：自检卡片要和真实通知长得一样，
+ * 否则用户无法从卡片上看出自己配的 footer 生效没有。规则与发送端一致：
+ * 非空 → `${footer} · ${时间戳}`；空串 → 只有时间戳；未传 → 中性默认。
+ */
+export function testCardPayload({ channelName, label, webhook, footer = DEFAULT_FOOTER, timestamp = nowStamp() } = {}) {
   const title = `feishu-notify 自检${channelName ? `（${channelName}）` : ""}`;
   const lines = [
     "**配置自检**：能看到这张卡片，说明这个 channel 的 webhook 是通的。",
@@ -27,6 +33,7 @@ export function testCardPayload({ channelName, label, webhook, timestamp = nowSt
     label ? `- label：${label}` : null,
     webhook ? `- 地址：\`${maskWebhook(webhook)}\`` : null,
   ].filter(Boolean);
+  const noteText = footer === "" ? timestamp : `${footer} · ${timestamp}`;
 
   return JSON.stringify({
     msg_type: "interactive",
@@ -35,7 +42,7 @@ export function testCardPayload({ channelName, label, webhook, timestamp = nowSt
       elements: [
         { tag: "markdown", content: lines.join("\n") },
         { tag: "hr" },
-        { tag: "note", elements: [{ tag: "plain_text", content: `feishu-notify · ${timestamp}` }] },
+        { tag: "note", elements: [{ tag: "plain_text", content: noteText }] },
       ],
     },
   });
@@ -98,8 +105,8 @@ export function sendPayload({
 }
 
 /** 发一张测试卡片；返回同 sendPayload，并附带脱敏后的目标地址（便于日志对照） */
-export function sendTestCard({ webhook, channelName, label, ...rest } = {}) {
-  const result = sendPayload({ webhook, payload: testCardPayload({ webhook, channelName, label }), ...rest });
+export function sendTestCard({ webhook, channelName, label, footer, ...rest } = {}) {
+  const result = sendPayload({ webhook, payload: testCardPayload({ webhook, channelName, label, footer }), ...rest });
   return { ...result, webhookMasked: maskWebhook(webhook) };
 }
 

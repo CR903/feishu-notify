@@ -12,7 +12,7 @@ first one is built so far.
 
 | Package | Path | Status | What it is |
 |---|---|---|---|
-| `feishu-notify-cli` | [`packages/cli`](./packages/cli) | ✅ **implemented** (not on npm yet) | The core: the `feishu-notify` bash sender + the `feishu-notify-cli` Node config/diagnostics CLI. Ships both binaries. |
+| `feishu-notify-cli` | [`packages/cli`](./packages/cli) | ✅ **implemented** (not on npm yet) | The core: the `feishu-notify` bash sender + the `feishu-notify-cli` Node config/diagnostics/`install` CLI. Ships both binaries. |
 | `opencode-feishu-notify` (intended) | [`packages/opencode`](./packages/opencode) | ✖ **not built** — README-only placeholder | opencode plugin that calls the sender with `--channel opencode`. |
 | `dsh-feishu-notify` (intended) | [`packages/dsh`](./packages/dsh) | ✖ **not built** — README-only placeholder | DSH profile/bundle that calls the sender with `--channel dsh`. |
 
@@ -33,8 +33,8 @@ Legend: ✅ implemented and measured · ⚠ assumed / not directly observed · �
     ├── cli/                     # the implemented package
     │   ├── package.json         #   name: feishu-notify-cli, bin ×2, files whitelist
     │   ├── bin/feishu-notify    #   the sender (bash)
-    │   ├── bin/feishu-notify-cli#   config/init/channel/doctor/resolve/footer (Node)
-    │   ├── lib/                 #   config resolution, commands, sender, secret gate
+    │   ├── bin/feishu-notify-cli#   config/init/channel/doctor/resolve/footer/install (Node)
+    │   ├── lib/                 #   config resolution, commands, sender, wiring self-check, install targets, secret gate
     │   ├── tests/               #   assertions + byte-exact golden fixtures
     │   └── README.md            #   the full documentation for the package
     ├── opencode/README.md       #   placeholder (no package.json)
@@ -49,11 +49,16 @@ compatibility, security model, rollback — lives in the package README:
 - [`packages/cli/README.md`](./packages/cli/README.md) (English)
 - [`packages/cli/README.zh-CN.md`](./packages/cli/README.zh-CN.md) (中文)
 
-Quick version:
+Quick version (install the CLI **globally** — two real binaries in one bin directory; do not point
+your wiring at a development checkout, which is how the 2026-10-18 rename made notifications fail
+silently):
 
 ```sh
-npx feishu-notify-cli init        # asks for your webhook, verifies with a test card
-npx feishu-notify-cli doctor      # per-channel reachability check
+npm i -g feishu-notify-cli            # puts both commands on PATH
+feishu-notify-cli init                # asks for your webhook, verifies with a test card
+feishu-notify-cli doctor              # wiring self-check (sender/resolver/Node, dangling symlinks) + per-channel reachability
+feishu-notify-cli install --dry-run   # show what would be merged into your agent configs; writes nothing
+feishu-notify-cli install             # wire it up (claude-code writes; opencode/dsh are gated — see the package README)
 ```
 
 From a clone (this is also the state until the package is published):

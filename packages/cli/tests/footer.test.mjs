@@ -351,6 +351,72 @@ describe("发送端卡片 footer（bash）", () => {
 	});
 });
 
+// ---------------------------------------------------------------- 自检卡片预览真实 footer
+
+describe("自检卡片带上当前生效的 footer（init / doctor）", () => {
+	it("doctor：测试卡片的 note 就是配置里的 footer —— 用户能一眼看出自己配的生效了没", () => {
+		const config = seedConfig(tmpConfig("card-doctor-footer"), { footer: "Smarterlab" });
+		resetLog();
+		const result = runCli(["doctor"], { config });
+
+		assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+		assert.match(lastNote(), /^Smarterlab · \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/, "自检卡片必须长得和真实通知一样");
+		assert.match(result.stdout, /footer：Smarterlab/);
+	});
+
+	it("doctor：未配置 footer → 卡片是中性的（与真实通知一致）", () => {
+		const config = seedConfig(tmpConfig("card-doctor-default"));
+		resetLog();
+		assert.equal(runCli(["doctor"], { config }).status, 0);
+		assert.match(lastNote(), new RegExp(`^${DEFAULT_FOOTER} · `));
+	});
+
+	it("doctor：footer 是空串 → 卡片 note 只剩时间戳", () => {
+		const config = seedConfig(tmpConfig("card-doctor-empty"), { footer: "" });
+		resetLog();
+		assert.equal(runCli(["doctor"], { config }).status, 0);
+		assert.match(lastNote(), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+	});
+
+	it("doctor：手改成长度违规的 footer → 卡片回退中性默认，doctor 本身照常成功", () => {
+		const config = seedConfig(tmpConfig("card-doctor-broken"), { footer: "x".repeat(FOOTER_MAX_LENGTH + 1) });
+		resetLog();
+		const result = runCli(["doctor"], { config });
+
+		assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+		assert.match(lastNote(), new RegExp(`^${DEFAULT_FOOTER} · `), "装饰字段坏了不该让自检卡发不出去");
+	});
+
+	it("init：验证卡片带上 --footer 的值（发卡与落盘用的是同一份 footer）", () => {
+		const config = tmpConfig("card-init-footer");
+		resetLog();
+		const result = runCli(["init", "--non-interactive", "--webhook", A, "--channel", "default", "--footer", "Acme"], { config });
+
+		assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+		assert.match(lastNote(), /^Acme · /);
+		assert.equal(JSON.parse(readFileSync(config, "utf8")).footer, "Acme");
+	});
+
+	it("init：再次 init 不带 --footer → 沿用原值，卡片也用原值（不静默漂移回中性默认）", () => {
+		const config = seedConfig(tmpConfig("card-init-keep"), { footer: "Kept" });
+		resetLog();
+		const result = runCli(["init", "--non-interactive", "--webhook", B, "--channel", "default"], { config });
+
+		assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+		assert.match(lastNote(), /^Kept · /);
+		assert.equal(JSON.parse(readFileSync(config, "utf8")).footer, "Kept");
+	});
+
+	it("init --footer \"\" → 卡片只剩时间戳（与发送端同一语义）", () => {
+		const config = tmpConfig("card-init-empty");
+		resetLog();
+		const result = runCli(["init", "--non-interactive", "--webhook", A, "--channel", "default", "--footer", ""], { config });
+
+		assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+		assert.match(lastNote(), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+	});
+});
+
 // ---------------------------------------------------------------- 隔离守卫
 
 describe("隔离守卫", () => {

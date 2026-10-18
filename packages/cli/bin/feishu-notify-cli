@@ -5,8 +5,9 @@
  * 本文件只做参数分发与错误到退出码的映射，实现在 lib/ 里（可被测试直接 import）：
  *   lib/config.mjs    webhook 解析 + footer 解析 + 配置读写（单一真源）
  *   lib/commands.mjs  init / channel / doctor / footer（Step 3）
+ *   lib/install.mjs   install 的编排（Step 4：三个目标在 lib/install-targets/）
+ *   lib/wiring.mjs    接线自检（R11：悬空符号链接这类"静默失效"的诊断）
  *   lib/sender.mjs    测试卡片发送（curl 子进程，测试用 PATH 覆盖 stub）
- *   install 仍属 implement.md Step 4，未实现（显式报错，不静默假装成功）
  *
  * 退出码约定：
  *   0 = 成功
@@ -20,13 +21,10 @@ import { fileURLToPath } from "node:url";
 
 import { CommandError, commandChannel, commandDoctor, commandFooter, commandInit, commandsUsage } from "../lib/commands.mjs";
 import { ConfigError, configPath, maskWebhook, resolveWebhook } from "../lib/config.mjs";
+import { commandInstall } from "../lib/install.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PKG = JSON.parse(readFileSync(join(HERE, "..", "package.json"), "utf8"));
-
-const NOT_YET = {
-	install: "Step 4（探测 opencode / Claude Code / DSH 并幂等写入）",
-};
 
 function usage() {
 	return [
@@ -102,12 +100,7 @@ async function main(argv) {
 	if (command === "channel") return await commandChannel(argv.slice(1));
 	if (command === "doctor") return await commandDoctor(argv.slice(1));
 	if (command === "footer") return commandFooter(argv.slice(1));
-	if (Object.prototype.hasOwnProperty.call(NOT_YET, command)) {
-		throw new CommandError(`\`${command}\` 尚未实现 —— 属于 ${NOT_YET[command]}。\n当前可用：init / channel / doctor / footer / resolve / help / version`, {
-			exitCode: 1,
-			reason: "not-implemented",
-		});
-	}
+	if (command === "install") return await commandInstall(argv.slice(1));
 	throw new ConfigError(`未知子命令：${command}\n\n${usage()}`, { exitCode: 1, reason: "usage" });
 }
 

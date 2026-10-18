@@ -9,7 +9,7 @@ Two commands ship in this package:
 | Command | Runtime | Role |
 |---|---|---|
 | `feishu-notify` | bash | The sender. POSTs a card or a plain-text message to the resolved webhook. This is what hooks and agent plugins call. |
-| `feishu-notify-cli` | Node ≥ 18 | Config and diagnostics: `resolve`, `init`, `channel`, `doctor`, `footer`. |
+| `feishu-notify-cli` | Node ≥ 18 | Config and diagnostics: `resolve`, `init`, `channel`, `doctor`, `footer`, `install`. |
 
 > **Where this package lives.** `feishu-notify-cli` is the `packages/cli` workspace of the
 > `feishu-notify` monorepo (repo-root README: [`../../README.md`](../../README.md)). Paths in
@@ -31,7 +31,8 @@ Two commands ship in this package:
 | Sends | Interactive card (title + markdown body) or plain text; body from an argument or from a file |
 | Hook modes | `--hook` / `--idle` / `--done` read the hook's JSON on stdin (`last_assistant_message`, `prompt`) and append a source + timestamp footer |
 | Configures itself | `init` sends a test card first and writes the config only if that card arrived |
-| Diagnoses itself | `doctor` sends a real test card per channel and reports which ones are reachable |
+| Diagnoses itself | `doctor` first checks the **wiring chain** the hooks actually run through (sender → resolver → Node ≥ 18, including dangling symlinks), then sends a real test card per channel |
+| Installs itself | `install` merges the hooks/plugin declarations into the agents it finds (`claude-code`, `opencode`, `dsh`), idempotently, with a `*.bak.<timestamp>` per touched file |
 | Multi-channel | Named channels (`default`, `opencode`, `claude`, …) with one `activeChannel`; callers can pin a channel per target |
 | Card footer is yours | The line under the card is the config field `footer` (≤40 chars, no newlines). Unset → the neutral `feishu-notify`; set to `""` → timestamp only |
 | Keeps secrets out | Every printed value is masked; a secret gate in `npm test` scans source and `npm pack` output for real hook tokens |
@@ -42,7 +43,8 @@ Two commands ship in this package:
 - **No card interactivity.** Buttons, callbacks and approvals are out of scope; cards are one-way.
 - **No aggregation, muting or scheduling.** One event in, one card out.
 - **No silent fallback.** Missing config is an error (`exit 2`). That is deliberate — see [Security](#security). The price is that a broken config stops notifications instead of degrading quietly.
-- **No one-command `install` yet.** `feishu-notify-cli install` exists as a command name and exits `1` saying it is not implemented. Wiring is manual for now ([Wiring](#3-wire-up-your-agent-manual)).
+- **`install` does not cover everything yet.** `claude-code` is wired end to end. `opencode` is gated on the plugin package being published (the installer refuses to declare an unresolvable name), and `dsh` is gated on the adapter existing (the installer probes, prints the exact change it *would* make, and refuses to write). See [Wiring](#3-wire-up-your-agent-one-command).
+- **`install` never runs a package manager.** For DSH it writes the profile manifest and prints the `dsh plugin … pnpm install` command for you to run; it does not execute pnpm/npm installs itself, so `--dry-run` staying write-free is a property the tool can actually guarantee.
 - **No Windows.** The sender is bash + `curl` + `python3`. The CLI side is Node and portable, the sender is not.
 - **No DSH adapter.** Not implemented in any form.
 
@@ -66,6 +68,32 @@ If none qualifies, the sender still tries the CLI directly and, when that fails,
 
 ## Quick start
 
+### 0. Install the CLI itself (globally — this matters)
+
+```sh
+npm i -g feishu-notify-cli      # put the two commands in a real bin directory
+```
+
+**Why global rather than a clone or `npx`.** The wiring that hooks depend on is "a `feishu-notify`
+on `PATH` that can find a `feishu-notify-cli` next to itself". A global install produces exactly
+that: two real files side by side in one bin directory.
+
+What must *not* happen is the live setup depending on **a development checkout path**. On
+2026-10-18 this repository was renamed while `~/.local/bin/feishu-notify-cli` was a symlink into
+it. The link went dangling, the sender exited `2`, and notifications stopped **silently** — the
+error only existed inside the hook's process, where nobody was looking. `doctor` now detects that
+exact state ([Wiring health](#wiring-health-r11)); the structural fix is to not point production
+at a working copy, and the installer therefore writes the bare command name `feishu-notify` (resolved
+through `PATH`) instead of any absolute path.
+
+Running from a clone is fine for trying it out:
+
+```sh
+node packages/cli/bin/feishu-notify-cli doctor      # from the repo root
+```
+
+but do not wire hooks to that path.
+
 ### 1. Configure
 
 ```sh
@@ -88,11 +116,51 @@ feishu-notify-cli init --non-interactive --webhook "$URL" --no-verify   # skips 
 feishu-notify-cli doctor
 ```
 
-`doctor` reads the config, sends one real card per channel, prints `结论：N/M 通`, and exits `1` if any channel is unreachable. `doctor --json` gives the same report as JSON.
+`doctor` does two things, in this order:
 
-### 3. Wire up your agent (manual)
+1. **Wiring self-check** — walks the chain a real hook runs through (sender → resolver → Node ≥ 18),
+   classifying every candidate with `lstat` so a **dangling symlink** is reported as such instead of
+   as "missing", and prints the fix (`rm` the broken link, `npm i -g feishu-notify-cli`).
+2. **Per-channel reachability** — sends one real card per channel and prints `结论：N/M 通`; exits `1`
+   if a channel is unreachable. The cards carry the **effective footer**, so what you see on the test
+   card is exactly what your notifications will look like.
 
-The installer is not implemented, so wire it by hand. Both paths below call the **sender**, which resolves the webhook itself.
+The wiring verdict deliberately does **not** change the exit code: hooks run in the agent's
+environment (different `PATH`, different `HOME`), so a ✗ here is a strong, actionable warning rather
+than a definitive failure of the channels. `doctor --json` carries `wiring` for scripts.
+
+### 3. Wire up your agent (one command)
+
+```sh
+feishu-notify-cli install --dry-run     # print the plan; writes nothing
+feishu-notify-cli install               # ask for confirmation, then write
+feishu-notify-cli install --yes         # non-interactive
+```
+
+What each target does today — measured, not aspirational:
+
+| Target | Probe | Action | State |
+|---|---|---|---|
+| `claude-code` | `~/.claude/settings.json` | Merges two hook groups: `Notification` (matcher `idle_prompt`) → `feishu-notify --idle`, and a matcher-less `Stop` → `feishu-notify --done`. Existing hooks are kept; dedupe is by command string, plus "same event, same tool" so you never get two cards per event | ✅ writes |
+| `opencode` | `~/.config/opencode/opencode.json` | Appends `opencode-feishu-notify` to `plugins` (object form `{"package": …}` by default, or `--opencode-form bare`) | ⛔ **refuses** while the package is not resolvable (verified with `npm view`), so you never get a half-wired config |
+| `dsh` | `~/.dsh/profiles/*/package.json` | Adds the package to `dependencies` **and** `dsh.profile.bundles` | ⛔ **refuses by default** (the adapter package does not exist yet; a bundle that cannot resolve makes DSH fail to start). It prints the exact change and the `dsh plugin … pnpm install` command; `--dsh-dev-dir <path>` switches to a `link:<abs>` dev wiring |
+
+Guarantees, all of them asserted in `tests/install.test.mjs`:
+
+- `--dry-run` writes nothing, and the plan it prints is the **same data** the real run executes.
+- Every file it writes is backed up first as `<file>.bak.<timestamp>`; the run ends with `cp -p …` rollback lines.
+- Running it twice produces **zero** file changes on the second run (byte-hash assertion, no new backups).
+- A failing target does not stop the others, and is reported with its own error and rollback line.
+- A file that is a symlink is never written (writing through it would hit your dotfiles repo; replacing it would break the layout) — the installer refuses and tells you what the link points at.
+
+`--channel <name>` is only appended to the hooks when you pass it explicitly; by default the hooks
+carry no `--channel` and the sender uses `activeChannel`.
+
+### 4. Wire up your agent (manual)
+
+The installer covers the paths above; this section is what to do by hand when it refuses, and the
+reference for what the installer writes. Both paths below call the **sender**, which resolves the
+webhook itself.
 
 **Claude Code** — `~/.claude/settings.json`, merging two entries into `hooks`. These are the entries installed on the author's machine, copied verbatim:
 
@@ -114,15 +182,15 @@ The installer is not implemented, so wire it by hand. Both paths below call the 
 }
 ```
 
-Notes: hook handlers run in shell form (`sh -c`), so `~` expands and `--idle` / `--done` get the hook JSON on stdin. Add `--channel <name>` if you want this target pinned to a specific bot (`--channel claude`); without it the `activeChannel` is used. The `timeout` numbers are copied from the working local config — current Claude Code docs describe the field in seconds, so re-check it for your version.
+Notes: hook handlers run in shell form (`sh -c`), so `~` expands and `--idle` / `--done` get the hook JSON on stdin. Add `--channel <name>` if you want this target pinned to a specific bot (`--channel claude`); without it the `activeChannel` is used. The `timeout` numbers are copied from the working local config — current Claude Code docs describe the field in seconds, so re-check it for your version. `install` writes the **bare** command name instead of `~/.local/bin/…`, so the hook survives a `PATH`-based global install and cannot go dangling when a repository moves.
 
-**opencode** — opencode auto-loads plugins from `~/.config/opencode/plugins/*.{ts,js}` (measured on this machine's runtime 2.0.32). The plugin that emits these notifications lives in its own package, `opencode-feishu-notify`, which is **not published yet**; what an adapter has to do is call the sender and let the CLI resolve the channel:
+**opencode** — opencode auto-loads plugins from `~/.config/opencode/{plugin,plugins}/*.{ts,js}` (measured on this machine's runtime 2.0.32) and also from the `plugins` array in `opencode.json`. The plugin that emits these notifications lives in its own package, `opencode-feishu-notify`, which is **not published yet**; what an adapter has to do is call the sender and let the CLI resolve the channel:
 
 ```sh
 feishu-notify --channel opencode --source opencode --title "…" --file /tmp/msg.txt
 ```
 
-Until that package is published there is no third-party opencode install path. Do **not** copy the author's local `feishu-notify.ts`: that file still contains a personal webhook. See [Roadmap](#not-yet-implemented--roadmap).
+`install` declares the package for you once it exists (see [Wiring](#3-wire-up-your-agent-one-command)); until then it refuses. Do **not** copy the author's local `feishu-notify.ts`: that file still contains a personal webhook. See [Roadmap](#not-yet-implemented--roadmap).
 
 ## Configuration reference
 
@@ -203,11 +271,42 @@ Every source is validated the same way: `https` only, and for `*.feishu.cn` / `*
 | `init [--non-interactive] (--webhook <u> \| --webhook-stdin) [--channel <n>] [--label <t>] [--footer <t>] [--config <p>] [--no-verify] [--force]` | Write the config; verifies with a test card first and writes **nothing** if the card fails |
 | `channel list [--json]` / `add <n> …` / `remove <n> [--force]` / `set-active <n>` | Manage channels |
 | `footer [--config <p>] [--json]` | Print the effective card footer on stdout (`source=…` on stderr). Exit `2` if the config is unusable — the sender falls back to the neutral default |
-| `doctor [--channel <n>] [--json]` | Per-channel reachability test |
+| `doctor [--channel <n>] [--json]` | Wiring self-check (sender → resolver → Node, dangling symlinks included) + per-channel reachability test |
+| `install [--dry-run] [--yes] [--target <t>…\|--skip <t>…] [--channel <n>] [--opencode-form <f>] [--dsh-dev-dir <p>] [--no-verify]` | Probe the agents on this machine and wire them in idempotently; `--dry-run` prints the plan and writes nothing |
 | `help`, `version` | — |
-| `install` | **Not implemented** → `exit 1` |
 
 Exit codes: `0` success · `1` usage error or runtime failure (card not delivered, channel exists, …) · `2` configuration problem. `--webhook-stdin` exists so a URL read from a file never appears in `ps` output; it is mutually exclusive with `--webhook`.
+
+`install` exits `1` when a target failed, when everything it could do was refused, or when a target you named explicitly with `--target` was skipped or refused.
+
+### Wiring health (R11)
+
+The chain a hook actually runs through has three links, and **any of them can fail silently** because
+the error lands in the agent's hook process, not in your terminal:
+
+```
+hook → feishu-notify (sender) → feishu-notify-cli (resolver) → Node ≥ 18
+```
+
+`doctor` walks it in that order, resolving candidates exactly the way `bin/feishu-notify` does
+(`$FEISHU_NOTIFY_CLI` → next to the sender → `$HOME/.local/bin` → `PATH`, then the Node search order),
+and classifies each candidate with `lstat`, so a **dangling symlink** is reported as a dangling
+symlink rather than as a missing file — the two need different fixes:
+
+```text
+  ▸ 接线自检（真实 hook 走的那条链：发送端 → 解析器 → Node ≥ 18）…
+    ✓ 发送端        ~/.local/bin/feishu-notify
+    ✗ 解析器        <找不到>
+        ✗ ~/.local/bin/feishu-notify-cli：悬空符号链接 → ~/project/renamed-away-repo/bin/feishu-notify-cli（目标不存在）
+    ✓ Node ≥ 18    ~/.nvm/versions/node/v22.23.2/bin/node（v22.23.2）
+    修复：
+      - ~/.local/bin/feishu-notify-cli 是悬空符号链接（→ …）：rm … 然后 `npm i -g feishu-notify-cli`
+      - 发送端找不到解析器 feishu-notify-cli：装一次即可 — `npm i -g feishu-notify-cli`
+```
+
+A broken candidate that a later one covers up is still printed: it works today, and stops working the
+day `PATH` changes. `doctor --json` exposes the same data as `wiring`, the check cannot change the
+exit code, and the test suite pins that behaviour (`tests/wiring.test.mjs`).
 
 ### `feishu-notify` (sender)
 
@@ -333,14 +432,16 @@ npm run fixtures:update  # overwrite tests/fixtures/* with a fresh capture
 | `tests/config-resolution.test.mjs` | Precedence matrix, error branches, `0600`/`0700`/atomic writes, masking, isolation guards |
 | `tests/sender-compat.test.mjs` | bash-side precedence and exit-code matrix, resolver discovery order, Node-interpreter choice, payload independence from the webhook source |
 | `tests/fixtures.test.mjs` | The golden fixtures are reproducible byte-for-byte, and their note carries the neutral default footer |
-| `tests/footer.test.mjs` | `footer` validation/resolution/CLI, `init --footer`, `channel`/`doctor` display, and the surgical "only the note changes" property |
+| `tests/footer.test.mjs` | `footer` validation/resolution/CLI, `init --footer`, `channel`/`doctor` display, the **self-check card carrying the effective footer**, and the surgical "only the note changes" property |
+| `tests/install.test.mjs` | All three install targets end to end in a simulated `HOME`: detection, merging, dedupe, refusals, both opencode forms, `--dry-run` zero-write, byte-hash idempotence, single-target failure isolation, rollback lines, exit codes |
 | `tests/init.test.mjs` | `init`, `channel`, `doctor`, `lib/sender.mjs`, isolation guards |
+| `tests/wiring.test.mjs` | `classify()` (including **dangling symlinks**), the four `checkWiring()` scenarios, and `doctor`'s wiring output/exit-code contract |
 | `tests/secret-scan.test.mjs` | Token detection, whole-repo scan, injection self-test, live-fingerprint cross-check |
 | `tests/live.test.mjs` | Real network round trip — skipped unless `FEISHU_NOTIFY_LIVE=1` |
 
 `tests/fixtures/` holds the payloads captured from the **pre-config** sender (stub `curl`, five inputs: `--idle`, `--done`, `--title X --file`, `--text`, bare text). The config refactor had to reproduce them byte-for-byte with the timestamp normalized, which is why they are still in the repo: they are the definition of "the sender did not change". The **only** intended change since is the card footer (R9): the note moved from the author's hardcoded `Smarterlab ·` to the neutral default, and the harness pins `footer` to that neutral value so the capture cannot drift with the developer's own machine. Re-capture with `npm run fixtures:update` only when you intend to change that behaviour.
 
-Environment overrides: `FEISHU_NOTIFY_LIVE=1` (enable the live suite), `FEISHU_NOTIFY_CURL` (path to curl), `FEISHU_NOTIFY_CONFIG` (config path), `FEISHU_NOTIFY_CLI` / `FEISHU_NOTIFY_NODE` (resolver and interpreter for the sender).
+Environment overrides: `FEISHU_NOTIFY_LIVE=1` (enable the live suite), `FEISHU_NOTIFY_CURL` (path to curl), `FEISHU_NOTIFY_CONFIG` (config path), `FEISHU_NOTIFY_CLI` / `FEISHU_NOTIFY_NODE` (resolver and interpreter for the sender), `FEISHU_NOTIFY_NPM` (npm binary used by `install`'s "is this package resolvable" pre-check; tests point it at a stub).
 
 ### Rollback
 
@@ -352,15 +453,20 @@ cp -p ~/.local/bin/feishu-notify.pre-config.bak ~/.local/bin/feishu-notify   # r
 shasum -a 256 ~/.local/bin/feishu-notify    # expect 0b788cf3…c52f1ebde (that copy contains the old hardcoded address)
 ```
 
-`bin/feishu-notify.orig` in this repo is the **redacted** baseline: use it to diff, never to restore. Installed agents keep their own backups (`*.bak.<timestamp>`) once the installer exists; until then, back up the file you edit yourself.
+`bin/feishu-notify.orig` in this repo is the **redacted** baseline: use it to diff, never to restore.
+
+`install` prints its own rollback lines for everything it touched — one `cp -p <file>.bak.<timestamp> <file>` per file. Each target only ever appends to the files it names, so restoring the backup also removes anything a later run added.
 
 ## Not yet implemented / Roadmap
 
 | Item | State |
 |---|---|
-| `feishu-notify-cli install` (opencode / Claude Code / DSH, idempotent, `--dry-run`, backups) | Command exists and exits `1` with "not implemented" |
+| `feishu-notify-cli install` → `claude-code` | ✅ writes (merges two hook groups, dedupe by command, keeps your hooks) |
+| `feishu-notify-cli install` → `opencode` | ⛔ refuses while `opencode-feishu-notify` is unresolvable (checked with `npm view` before writing); `--no-verify` overrides |
+| `feishu-notify-cli install` → `dsh` | ⛔ refuses by default (the adapter package does not exist yet); `--dsh-dev-dir` enables the `link:<abs>` dev wiring |
+| `install` running the package manager for you | Not done on purpose (see "What it does not do"); the exact `dsh plugin … pnpm install` command is printed instead |
 | `opencode-feishu-notify` (`packages/opencode`, placeholder only) | Package not published; the adapter's channel wiring and its install path land with it |
-| opencode "declare the package name in config and it auto-installs" | Not verified. `config.d.ts` types `plugins` as `Array<string \| { package, options }>`, but whether a bare string resolves to an npm name is untested — it can only be tested once the package exists on the registry |
+| opencode plugin **declaration syntax** | ✅ **measured** on the 2.0.32 binary: `plugins` is `Array<string \| {package, options}>`, both forms normalize to the same target, a bare `"-name"` string means *remove*, and a non-absolute target is installed/resolved by opencode's package manager (a failure only marks the plugin failed — it does not stop opencode). What is **not** measured is the registry round trip, which needs the package published |
 | `dsh-feishu-notify` (`packages/dsh`, placeholder only) | Not implemented |
 | Windows | Out of scope: the sender is bash. A port needs the golden-fixture treatment the Node CLI got |
 | Publishing to npm (all three packages) | Not done — deliberately deferred to the parent task |

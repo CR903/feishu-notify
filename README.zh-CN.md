@@ -10,7 +10,7 @@
 
 | 包 | 路径 | 状态 | 是什么 |
 |---|---|---|---|
-| `feishu-notify-cli` | [`packages/cli`](./packages/cli) | ✅ **已实现**（尚未发布到 npm） | 内核：`feishu-notify`（bash 发送端）+ `feishu-notify-cli`（Node 配置/诊断 CLI），两个 bin 同包发布 |
+| `feishu-notify-cli` | [`packages/cli`](./packages/cli) | ✅ **已实现**（尚未发布到 npm） | 内核：`feishu-notify`（bash 发送端）+ `feishu-notify-cli`（Node 配置/诊断/`install` CLI），两个 bin 同包发布 |
 | `opencode-feishu-notify`（拟） | [`packages/opencode`](./packages/opencode) | ✖ **未建** —— 仅 README 占位 | 调发送端的 opencode 插件，固定 `--channel opencode` |
 | `dsh-feishu-notify`（拟） | [`packages/dsh`](./packages/dsh) | ✖ **未建** —— 仅 README 占位 | 调发送端的 DSH profile/bundle，固定 `--channel dsh` |
 
@@ -30,8 +30,8 @@
     ├── cli/                     # 已实现的包
     │   ├── package.json         #   name: feishu-notify-cli，两个 bin，files 白名单
     │   ├── bin/feishu-notify    #   发送端（bash）
-    │   ├── bin/feishu-notify-cli#   配置/init/channel/doctor/resolve/footer（Node）
-    │   ├── lib/                 #   解析、命令、发送、密钥闸门
+    │   ├── bin/feishu-notify-cli#   配置/init/channel/doctor/resolve/footer/install（Node）
+    │   ├── lib/                 #   解析、命令、发送、接线自检、安装目标、密钥闸门
     │   ├── tests/               #   断言测试 + 逐字节黄金样例
     │   └── README.md            #   本包的完整文档
     ├── opencode/README.md       #   占位（无 package.json）
@@ -45,11 +45,14 @@
 - [`packages/cli/README.zh-CN.md`](./packages/cli/README.zh-CN.md)（中文）
 - [`packages/cli/README.md`](./packages/cli/README.md)（English）
 
-速览：
+速览（**推荐全局安装**：产出真实的 bin，别让接线指向开发仓库路径 —— 2026-10-18 的仓库改名事故就是这么来的）：
 
 ```sh
-npx feishu-notify-cli init        # 问你要 webhook，先发一张测试卡片验证
-npx feishu-notify-cli doctor      # 逐 channel 实测可达性
+npm i -g feishu-notify-cli            # 两个命令进同一个 bin 目录
+feishu-notify-cli init                # 问你要 webhook，先发一张测试卡片验证
+feishu-notify-cli doctor              # 接线自检（发送端/解析器/Node，含悬空符号链接）+ 逐 channel 实测
+feishu-notify-cli install --dry-run   # 看将要写进 agent 配置的改动（零写入）
+feishu-notify-cli install             # 确认后接线（claude-code 可写；opencode/dsh 有前置条件，见包 README）
 ```
 
 从克隆的仓库里跑（包发布前也就是这个状态）：

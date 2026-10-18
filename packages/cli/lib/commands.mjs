@@ -25,6 +25,7 @@ import {
 	assertChannelName,
 	configLoadError,
 	configPath,
+	effectiveFooter,
 	maskWebhook,
 	readConfig,
 	removeChannel,
@@ -36,44 +37,16 @@ import {
 	validateWebhook,
 	writeConfig,
 } from "./config.mjs";
+import { CommandError } from "./errors.mjs";
+import { makeIo, say, takeValue } from "./io.mjs";
 import { sendTestCard, shortBody } from "./sender.mjs";
+import { checkWiring, renderWiring } from "./wiring.mjs";
 
-/** 非配置类失败（用法、发卡失败……）：exitCode 默认 1 */
-export class CommandError extends Error {
-	constructor(message, { exitCode = 1, reason = "command" } = {}) {
-		super(message);
-		this.name = "CommandError";
-		this.exitCode = exitCode;
-		this.reason = reason;
-	}
-}
+// CommandError 的实现在 lib/errors.mjs（中断与 install.mjs 的循环依赖）；
+// 这里再导出一次，bin 与测试继续从 commands.mjs 取它，调用方无需知道它搬过家。
+export { CommandError };
 
 // ---------------------------------------------------------------- io / 参数
-
-function makeIo(io = {}) {
-	return {
-		stdout: io.stdout ?? process.stdout,
-		stderr: io.stderr ?? process.stderr,
-		stdin: io.stdin ?? process.stdin,
-	};
-}
-
-function say(io, text = "") {
-	io.stdout.write(`${text}\n`);
-}
-
-function warn(io, text) {
-	io.stderr.write(`${text}\n`);
-}
-
-/** 取一个 flag 的值；缺值或下一个是 flag 都算用法错误 */
-function takeValue(argv, index, flag) {
-	const value = argv[index];
-	if (value === undefined || (value.startsWith("--") && value !== "-")) {
-		throw new CommandError(`${flag} 需要一个值`, { reason: "usage" });
-	}
-	return value;
-}
 
 /** --config <path> → 通过 FEISHU_NOTIFY_CONFIG 生效（与解析层同一份路径逻辑） */
 function applyConfigOverride(env, configFilePath) {
@@ -112,6 +85,15 @@ function renderResolvedSummary({ env, config }) {
 
 function configPathLine(file) {
 	return `  配置文件：${file}`;
+}
+
+/**
+ * 自检卡片（init 的验证卡、doctor 的逐 channel 测试卡）必须**带上当前生效的 footer**，
+ * 否则用户看不出自己配的 footer 到底生效没有 —— 卡片是唯一能"预览真实外观"的地方。
+ * `effectiveFooter()` 永不抛：手改坏的 footer 降级成中性默认，不拦下 doctor 的主流程。
+ */
+function selfCheckCardOptions({ webhook, channelName, label, config }) {
+	return { webhook, channelName, label, footer: effectiveFooter(config) };
 }
 
 /** footer 是人类可读的展示文本（不是密钥），可明文打印；空串含义特殊，单独标注 */
@@ -261,7 +243,7 @@ export async function commandInit(argv, { env: baseEnv = process.env, io: rawIo,
 	// 先验证，后落盘：验证失败什么都不写
 	if (!options.noVerify) {
 		say(io, "  ▸ 发送测试卡片验证地址…");
-		const result = await send({ webhook, channelName: name, label: options.label, spawn, env: baseEnv });
+		const result = await send({ ...selfCheckCardOptions({ webhook, channelName: name, label: options.label, config }), spawn, env: baseEnv });
 		if (!result.ok) {
 			throw new CommandError(
 				`❌ 测试卡片没发出去，**未写入任何配置**：${result.message}\n` +
@@ -442,9 +424,13 @@ async function channelAdd(argv, { baseEnv, io, spawn, send }) {
 	say(io, `  channel：${name}`);
 	say(io, `  webhook：${maskWebhook(webhook)}`);
 
+	// 先把要写的 config 算出来（与发卡无关），自检卡片才能带上"当前生效的 footer"
+	let config = existing ?? { version: CONFIG_VERSION, activeChannel: name, channels: {} };
+	config = upsertChannel(config, name, { webhook, label: options.label }, { force: options.force });
+
 	if (!options.noVerify) {
 		say(io, "  ▸ 发送测试卡片验证地址…");
-		const result = await send({ webhook, channelName: name, label: options.label, spawn, env: baseEnv });
+		const result = await send({ ...selfCheckCardOptions({ webhook, channelName: name, label: options.label, config }), spawn, env: baseEnv });
 		if (!result.ok) {
 			throw new CommandError(
 				`❌ 测试卡片没发出去，**未写入任何配置**：${result.message}\n  确认无需验证可加 --no-verify（不推荐）。`,
@@ -454,8 +440,6 @@ async function channelAdd(argv, { baseEnv, io, spawn, send }) {
 		say(io, `  ✓ 测试卡片已送达（${result.message}，${result.elapsedMs}ms）`);
 	}
 
-	let config = existing ?? { version: CONFIG_VERSION, activeChannel: name, channels: {} };
-	config = upsertChannel(config, name, { webhook, label: options.label }, { force: options.force });
 	if (options.setActive || config.activeChannel === undefined) config.activeChannel = name;
 
 	const written = writeConfig(config, { env, force: options.force });
@@ -609,6 +593,10 @@ export async function commandDoctor(argv, { env: baseEnv = process.env, io: rawI
 		names = [options.channel];
 	}
 
+	// 接线自检（R11/AC10）：真实 hook 走的是"发送端 → 解析器 → Node"这条链，
+	// 它和"doctor 自己跑得动"是两件事。放在发卡之前：它是免费的，且故障模式是静默的。
+	const wiring = checkWiring({ env: baseEnv });
+
 	const envOverride = baseEnv.FEISHU_NOTIFY_WEBHOOK;
 	const report = {
 		configPath: path,
@@ -616,6 +604,7 @@ export async function commandDoctor(argv, { env: baseEnv = process.env, io: rawI
 		footer: config.footer ?? DEFAULT_FOOTER,
 		footerSource: config.footer === undefined ? "default" : "config",
 		envOverride: envOverride ? maskWebhook(envOverride) : null,
+		wiring,
 		channels: [],
 	};
 
@@ -631,7 +620,8 @@ export async function commandDoctor(argv, { env: baseEnv = process.env, io: rawI
 		} else {
 			say(io, "  环境变量 FEISHU_NOTIFY_WEBHOOK：未设置（发送端走 activeChannel）");
 		}
-		say(io, "  ▸ 逐 channel 发测试卡片（真实发出，用于确认可达性）…");
+		for (const line of renderWiring(wiring)) say(io, line);
+		say(io, `  ▸ 逐 channel 发测试卡片（真实发出，用于确认可达性；卡片带当前 footer）…`);
 	}
 
 	for (const name of names) {
@@ -651,7 +641,7 @@ export async function commandDoctor(argv, { env: baseEnv = process.env, io: rawI
 			continue;
 		}
 
-		const result = await send({ webhook, channelName: name, label: entry.label, spawn, env: baseEnv });
+		const result = await send({ ...selfCheckCardOptions({ webhook, channelName: name, label: entry.label, config }), spawn, env: baseEnv });
 		report.channels.push({
 			name,
 			ok: result.ok,
@@ -679,6 +669,9 @@ export async function commandDoctor(argv, { env: baseEnv = process.env, io: rawI
 	}
 
 	say(io, `  结论：${report.summary}${allOk ? "" : "（不通的看上面的 message；webhook 换新地址后重跑 doctor）"}`);
+	if (!wiring.ok) {
+		say(io, "  ⚠ 接线自检没通过（见上面的 ✗ 行）：即使这里每条 channel 都通，hook 环境里的通知也可能**静默失效**。");
+	}
 	if (!allOk) {
 		say(io, `  排查：飞书机器人是否启用、token 是否被重置、网络/代理是否可达。改地址用：`);
 		say(io, `    npx feishu-notify-cli channel add <name> --webhook <url>`);
@@ -700,7 +693,10 @@ export function commandsUsage() {
 		"  feishu-notify-cli footer [--config <path>] [--json]",
 		"      打印卡片底部要用的 footer（stdout 只放该字符串；source=… 打到 stderr）。配置问题 → exit 2，发送端据此回退到中性默认",
 		"  feishu-notify-cli doctor [--channel <name>] [--config <path>] [--json]",
-		"      读配置 → 逐 channel 发测试卡片 → 报告哪条通、哪条不通（全部输出均为掩码）",
+		"      读配置 → **接线自检**（发送端/解析器/Node 三环，含悬空符号链接）→ 逐 channel 发测试卡片 → 报告哪条通",
+		"  feishu-notify-cli install [--dry-run] [--yes] [--target <t>…|--skip <t>…] [--channel <name>]",
+		"      一键接入本机已装的 agent（claude-code / opencode / dsh）；幂等、写前备份、结束打印回滚指令",
+		"      细节：feishu-notify-cli install --help",
 		"",
 		`卡片 footer 是配置项（顶层 footer，≤${FOOTER_MAX_LENGTH} 字符、不含换行）；未配置时用中性默认 "${DEFAULT_FOOTER}"。`,
 	].join("\n");

@@ -180,6 +180,21 @@ export function resolveFooter({ env = process.env, configFilePath, config } = {}
 	return fromConfig(loaded.config.footer, loaded.path);
 }
 
+/**
+ * 从一份**已经在手**的配置里取"生效的 footer"，**永不抛**。
+ *
+ * 给 `init` / `doctor` 的自检卡片用：卡片必须长得和真实通知一样（否则用户看不出自己配的 footer
+ * 到底生效没有），但一个手改坏了的 footer（超长/含换行）不该让 doctor 整个失败 ——
+ * 与发送端的"尽力而为，回退中性默认"完全同一个态度。
+ */
+export function effectiveFooter(config) {
+	try {
+		return resolveFooter({ config }).footer;
+	} catch {
+		return DEFAULT_FOOTER;
+	}
+}
+
 // ---------------------------------------------------------------- 读配置
 
 /**
