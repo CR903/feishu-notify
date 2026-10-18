@@ -1,0 +1,214 @@
+#!/bin/bash
+# ============================================================
+# feishu-notify — 全局飞书通知脚本
+# 安装: ~/.local/bin/feishu-notify
+#
+# 用法:
+#   feishu-notify "消息内容"
+#   feishu-notify --title "标题" $'多行\n内容'
+#   feishu-notify --text "纯文本（无格式）"
+#   feishu-notify --file /path/to/file.txt
+#   feishu-notify --hook           # Stop hook 专用（读取 stdin JSON）
+#   feishu-notify --idle           # Notification idle hook 专用（读取 stdin JSON）
+#   feishu-notify --done           # Stop hook 专用（读取 stdin JSON + 含结果内容）
+#   feishu-notify --source "指定来源"  # 覆盖自动检测的客户端来源
+#   feishu-notify --webhook "URL"  # 覆盖 webhook（多机器人分流）
+#
+# Hook 数据流: Claude Code 将 hook 数据通过 stdin 以 JSON 格式传入
+#   Stop hook → stdin: {"last_assistant_message":"...", ...}
+#   Notification idle → stdin: {"prompt":"...", ...}
+# ============================================================
+
+set -euo pipefail
+
+# ========== 配置区 ==========
+# 默认 webhook：v1 起不再内置任何地址，由配置解析提供
+#   ${XDG_CONFIG_HOME:-$HOME/.config}/feishu-notify/config.json（FEISHU_NOTIFY_CONFIG / --webhook 可覆盖）
+# 下面这行是占位符，**不是**可用地址（仓库副本不含真实 webhook，见 bin/PROVENANCE.md）；
+# 改造前此处硬编码的是本机个人机器人地址，Step 2 会改为调用 feishu-notify-cli resolve。
+WEBHOOK_URL="https://open.feishu.cn/open-apis/bot/v2/hook/<PLACEHOLDER>"
+# ============================
+
+FILE=""
+MSG=""
+TITLE=""
+MSG_TYPE="card"   # card | text
+TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+HOOK_STDIN_DATA=""
+
+# ========== 客户端检测 ==========
+detect_source() {
+  local source="终端"
+  if [ "${TERM_PROGRAM:-}" = "vscode" ] || [ -n "${VSCODE_PID:-}" ]; then
+    source="VS Code 插件端"
+  elif [ -n "${ELECTRON_RUN_AS_NODE:-}" ] || [ "${CLAUDE_CODE_DESKTOP:-}" = "1" ]; then
+    source="桌面端"
+  fi
+  echo "$source"
+}
+
+SOURCE=$(detect_source)
+
+MSG_FOOTER=$'\n**来源**: '"${SOURCE}"$'\n🕐 '"$TIMESTAMP"
+
+# ========== 读取 stdin hook 数据（hook 模式：stdin 有 pipe 数据）==========
+HOOK_STDIN_DATA=""
+# 检测 stdin 是否为 pipe（hook 模式自动 pipe JSON 数据）
+if [ ! -t 0 ]; then
+  HOOK_STDIN_DATA=$(cat - 2>/dev/null || true)
+fi
+
+# ========== 解析 JSON 工具函数 ==========
+# 从 stdin JSON 中提取指定字段
+extract_json_field() {
+  local json="$1"
+  local field="$2"
+  echo "$json" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    val = d.get('$field', '')
+    if val:
+        print(str(val)[:2000])
+except:
+    pass
+" 2>/dev/null
+}
+
+# 解析参数
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --text) MSG_TYPE="text"; shift ;;
+    --webhook) WEBHOOK_URL="$2"; shift 2 ;;
+    --title) TITLE="$2"; shift 2 ;;
+    --file) FILE="$2"; shift 2 ;;
+    --source) SOURCE="$2"; shift 2 ;;
+    --hook)
+      TITLE="${SOURCE}通知"
+      # 从 stdin JSON 读取 hook 数据
+      if [ -n "$HOOK_STDIN_DATA" ]; then
+        local_msg=$(extract_json_field "$HOOK_STDIN_DATA" "last_assistant_message")
+        if [ -n "$local_msg" ]; then
+          MSG="${local_msg}"$'\n—'
+        else
+          MSG=$'**🤖 会话已结束**'
+        fi
+      else
+        MSG=$'**🤖 会话已结束**'
+      fi
+      MSG="${MSG}${MSG_FOOTER}"
+      shift
+      ;;
+    --idle)
+      TITLE="${SOURCE}通知"
+      # 从 stdin JSON 读取 Notification 数据（prompt 字段）
+      if [ -n "$HOOK_STDIN_DATA" ]; then
+        local_msg=$(extract_json_field "$HOOK_STDIN_DATA" "prompt")
+        if [ -n "$local_msg" ]; then
+          MSG="${local_msg}"$'\n—'
+        else
+          MSG=$'**🤖 任务完成，等候输入**\n—'
+        fi
+      else
+        MSG=$'**🤖 任务完成，等候输入**\n—'
+      fi
+      MSG="${MSG}${MSG_FOOTER}"
+      shift
+      ;;
+    --done)
+      TITLE="${SOURCE}通知"
+      # 从 stdin JSON 读取 Stop hook 数据（last_assistant_message 字段）
+      if [ -n "$HOOK_STDIN_DATA" ]; then
+        local_msg=$(extract_json_field "$HOOK_STDIN_DATA" "last_assistant_message")
+        if [ -n "$local_msg" ]; then
+          MSG="${local_msg}"$'\n—'
+        else
+          # 没有消息内容 → 静默退出
+          exit 0
+        fi
+      else
+        # 无内容 → 静默退出
+        exit 0
+      fi
+      MSG="${MSG}${MSG_FOOTER}"
+      shift
+      ;;
+    *) MSG="$1"; shift ;;
+  esac
+done
+
+# 读取文件
+if [ -n "$FILE" ]; then
+  [ -f "$FILE" ] || { echo "❌ 文件不存在: $FILE"; exit 1; }
+  MSG=$(cat "$FILE")
+fi
+
+[ -z "$MSG" ] && {
+  echo "用法: $0 <消息内容> [--text] [--title 标题] [--file <path>] [--webhook URL] [--source 来源] [--hook] [--idle] [--done]"
+  echo ""
+  echo "示例:"
+  echo "  feishu-notify '任务完成'"
+  echo "  feishu-notify --title '部署' $'构建成功\n已发布到测试环境'"
+  echo "  feishu-notify --file result.log"
+  echo "  feishu-notify --webhook 'https://open.feishu.cn/open-apis/bot/v2/hook/xxx' --title 'T' --file msg.txt"
+  echo "  feishu-notify --hook"
+  echo "  feishu-notify --done"
+  exit 1
+}
+
+# 转义 JSON 特殊字符
+escape_json() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\t'/\\t}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\b'/\\b}"
+  s="${s//$'\f'/\\f}"
+  printf '%s' "$s"
+}
+
+# 构建 JSON payload
+build_payload() {
+  if [ "$MSG_TYPE" = "text" ]; then
+    local text; text=$(escape_json "$MSG")
+    printf '{"msg_type":"text","content":{"text":"%s"}}' "$text"
+  else
+    local title_text="${TITLE:-${SOURCE}通知}"
+    local title_escaped; title_escaped=$(escape_json "$title_text")
+    local msg_escaped; msg_escaped=$(escape_json "$MSG")
+    local ts; ts=$(date +%s)
+
+    printf '{
+      "msg_type":"interactive",
+      "card":{
+        "header":{
+          "title":{"tag":"plain_text","content":"%s"},
+          "template":"blue"
+        },
+        "elements":[
+          {"tag":"markdown","content":"%s"},
+          {"tag":"hr"},
+          {"tag":"note","elements":[{"tag":"plain_text","content":"Smarterlab · %s"}]}
+        ]
+      }
+    }' "$title_escaped" "$msg_escaped" "$TIMESTAMP"
+  fi
+}
+
+# 发送
+PAYLOAD=$(build_payload)
+RESP=$(curl -s -w '\n%{http_code}' -X POST "$WEBHOOK_URL" \
+  -H "Content-Type: application/json" \
+  -d "$PAYLOAD")
+
+HTTP_CODE=$(echo "$RESP" | tail -1)
+BODY=$(echo "$RESP" | sed '$d')
+
+if [ "$HTTP_CODE" = "200" ]; then
+  echo "✅ 飞书消息已发送"
+else
+  echo "❌ 发送失败 (HTTP $HTTP_CODE): $BODY"
+  exit 1
+fi

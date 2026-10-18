@@ -1,0 +1,123 @@
+#!/usr/bin/env node
+/**
+ * feishu-notify-cli — 配置 / 安装入口（npm 包 feishu-notify-cli 的第二个 bin）
+ *
+ * 本文件只做参数分发与错误到退出码的映射，实现在 lib/ 里（可被测试直接 import）：
+ *   lib/config.mjs    webhook 解析 + 配置读写（单一真源）
+ *   lib/commands.mjs  init / channel / doctor（Step 3）
+ *   lib/sender.mjs    测试卡片发送（curl 子进程，测试用 PATH 覆盖 stub）
+ *   install 仍属 implement.md Step 4，未实现（显式报错，不静默假装成功）
+ *
+ * 退出码约定：
+ *   0 = 成功
+ *   1 = 用法错误 / 运行期失败（测试卡片发不出去、channel 已存在…）
+ *   2 = 配置问题（缺配置 / 坏 JSON / channel 不存在 / 非 https）—— stderr 含引导语
+ */
+
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { CommandError, commandChannel, commandDoctor, commandInit, commandsUsage } from "../lib/commands.mjs";
+import { ConfigError, configPath, maskWebhook, resolveWebhook } from "../lib/config.mjs";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const PKG = JSON.parse(readFileSync(join(HERE, "..", "package.json"), "utf8"));
+
+const NOT_YET = {
+	install: "Step 4（探测 opencode / Claude Code / DSH 并幂等写入）",
+};
+
+function usage() {
+	return [
+		`feishu-notify-cli ${PKG.version} — 飞书机器人通知的配置与安装入口`,
+		"",
+		"用法:",
+		"  feishu-notify-cli resolve [--channel <name>] [--webhook <url>] [--config <path>] [--json]",
+		"      解析最终 webhook（stdout 只打印 URL，来源信息打到 stderr；失败 exit 2 + 引导语）",
+		commandsUsage(),
+		"  feishu-notify-cli help | version",
+		"",
+		"解析优先级: --webhook > --channel > FEISHU_NOTIFY_WEBHOOK > 配置 activeChannel > 报错退出",
+		`配置文件: ${configPath({ env: process.env })}（FEISHU_NOTIFY_CONFIG 可覆盖）`,
+		"所有命令的输出只显示 webhook 掩码；明文只存在配置文件（0600）与发送时的 curl 参数里。",
+	].join("\n");
+}
+
+function parseFlags(argv) {
+	const options = { channel: undefined, webhook: undefined, configPath: undefined, json: false };
+	for (let index = 0; index < argv.length; index += 1) {
+		const arg = argv[index];
+		switch (arg) {
+			case "--channel":
+				options.channel = argv[++index];
+				break;
+			case "--webhook":
+				options.webhook = argv[++index];
+				break;
+			case "--config":
+				options.configPath = argv[++index];
+				break;
+			case "--json":
+				options.json = true;
+				break;
+			default:
+				throw new ConfigError(`未知参数：${arg}\n\n${usage()}`, { exitCode: 1, reason: "usage" });
+		}
+	}
+	return options;
+}
+
+function commandResolve(argv) {
+	const options = parseFlags(argv);
+	const env = { ...process.env };
+	if (options.configPath !== undefined) {
+		if (!options.configPath) throw new ConfigError("--config 需要一个路径", { exitCode: 1, reason: "usage" });
+		env.FEISHU_NOTIFY_CONFIG = options.configPath;
+	}
+
+	const result = resolveWebhook({ flagWebhook: options.webhook, channel: options.channel, env });
+	if (options.json) {
+		console.log(JSON.stringify({ ...result, webhook: result.webhook, configPath: configPath({ env }) }, null, 2));
+		return 0;
+	}
+	console.log(result.webhook); // stdout 只放 URL，便于 bash 直接赋值
+	console.error(`source=${result.source}${result.channelName ? ` channel=${result.channelName}` : ""} webhook=${maskWebhook(result.webhook)}`);
+	return 0;
+}
+
+async function main(argv) {
+	const command = argv[0];
+
+	if (command === undefined || command === "help" || command === "--help" || command === "-h") {
+		console.log(usage());
+		return 0;
+	}
+	if (command === "version" || command === "--version" || command === "-v") {
+		console.log(PKG.version);
+		return 0;
+	}
+	if (command === "resolve") return commandResolve(argv.slice(1));
+	if (command === "init") return await commandInit(argv.slice(1));
+	if (command === "channel") return await commandChannel(argv.slice(1));
+	if (command === "doctor") return await commandDoctor(argv.slice(1));
+	if (Object.prototype.hasOwnProperty.call(NOT_YET, command)) {
+		throw new CommandError(`\`${command}\` 尚未实现 —— 属于 ${NOT_YET[command]}。\n当前可用：init / channel / doctor / resolve / help / version`, {
+			exitCode: 1,
+			reason: "not-implemented",
+		});
+	}
+	throw new ConfigError(`未知子命令：${command}\n\n${usage()}`, { exitCode: 1, reason: "usage" });
+}
+
+try {
+	process.exitCode = await main(process.argv.slice(2));
+} catch (error) {
+	if (error instanceof ConfigError || error instanceof CommandError) {
+		console.error(error.message);
+		process.exitCode = error.exitCode;
+	} else {
+		console.error(`内部错误：${error?.stack ?? error}`);
+		process.exitCode = 1;
+	}
+}

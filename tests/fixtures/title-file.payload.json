@@ -1,0 +1,14 @@
+{
+      "msg_type":"interactive",
+      "card":{
+        "header":{
+          "title":{"tag":"plain_text","content":"T"},
+          "template":"blue"
+        },
+        "elements":[
+          {"tag":"markdown","content":"第一行：含\"双引号\"、反斜杠 \\、制表\t符\n第二行：多行内容\n第三行：emoji ✅"},
+          {"tag":"hr"},
+          {"tag":"note","elements":[{"tag":"plain_text","content":"Smarterlab · <TIMESTAMP>"}]}
+        ]
+      }
+    }

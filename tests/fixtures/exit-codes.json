@@ -1,0 +1,36 @@
+{
+  "note": "由 tests/capture-fixtures.sh 生成：feishu-notify 改造前（Step 0）行为基线，供 AC4 逐字节回归",
+  "payloadSha256": "<case>.payload.json 的 sha256（时间戳已归一化为 <TIMESTAMP>）",
+  "cases": {
+    "idle": {
+      "exit": 0,
+      "httpCode": 200,
+      "payloadSha256": "39f525fbd7a6b31050af9b03fc19f523c8e930a682c45535b7ad362a44dd889f",
+      "url": "https://open.feishu.cn/open-apis/bot/v2/hook/<REDACTED>"
+    },
+    "done": {
+      "exit": 0,
+      "httpCode": 200,
+      "payloadSha256": "216fae8c1c1027aaa520d7e2a7b5bae9bca6d8585328e4a996be3fbb44def1fe",
+      "url": "https://open.feishu.cn/open-apis/bot/v2/hook/<REDACTED>"
+    },
+    "title-file": {
+      "exit": 0,
+      "httpCode": 200,
+      "payloadSha256": "08a0c5e5626c2140f23bb1b0785c59b5065557767cdb2e79b3a5f30d08debab6",
+      "url": "https://open.feishu.cn/open-apis/bot/v2/hook/<REDACTED>"
+    },
+    "text": {
+      "exit": 0,
+      "httpCode": 200,
+      "payloadSha256": "7afe1cfd9251744d11d1999892ca554ef8434a649d49502469e33aed9743f932",
+      "url": "https://open.feishu.cn/open-apis/bot/v2/hook/<REDACTED>"
+    },
+    "bare": {
+      "exit": 0,
+      "httpCode": 200,
+      "payloadSha256": "368f07b2db609d9ec1709649a26eafc33742ad3aed147b349b226c712efbe609",
+      "url": "https://open.feishu.cn/open-apis/bot/v2/hook/<REDACTED>"
+    }
+  }
+}

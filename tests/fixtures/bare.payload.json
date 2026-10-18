@@ -1,0 +1,14 @@
+{
+      "msg_type":"interactive",
+      "card":{
+        "header":{
+          "title":{"tag":"plain_text","content":"终端通知"},
+          "template":"blue"
+        },
+        "elements":[
+          {"tag":"markdown","content":"裸文本消息"},
+          {"tag":"hr"},
+          {"tag":"note","elements":[{"tag":"plain_text","content":"Smarterlab · <TIMESTAMP>"}]}
+        ]
+      }
+    }
