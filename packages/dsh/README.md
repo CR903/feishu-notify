@@ -91,13 +91,12 @@ Every card class is on by default (turn end, approvals, user questions / plan re
 
 ## Which bot do the cards go to? (the `dsh` channel)
 
-`channel: dsh` is a **name**, never an address — the CLI resolves it from *your* config. Today
-`dsh` and `default` point at **the same bot** on the machine this was built on (verified: their
-webhook fingerprints match, `opencode`'s does not — every `doctor` result row prints one). That is a
-deliberate current choice, not a defect: one bot, per-adapter channel names, so the wiring is already
-in place.
+`channel: dsh` is a **name**, never an address — the CLI resolves it from *your* config. On the
+machine this was built on, `dsh` points at **its own bot** (it was split off from `default` after
+the adapter shipped; the fingerprints differ — every `doctor` result row prints one). The wiring is
+config, not code: the plugin only ever passes `--channel dsh`.
 
-To give DSH its own bot later, only the CLI config changes — nothing in this plugin:
+To point DSH at a different bot, only the CLI config changes — nothing in this plugin:
 
 ```bash
 # 1. create the bot in the Feishu group, copy its webhook, then feed it on stdin so it never
