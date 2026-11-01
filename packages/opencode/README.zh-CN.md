@@ -3,8 +3,8 @@
 把 opencode agent 事件变成飞书（Lark）卡片的 v2 插件 —— **通过调用 `feishu-notify` 发送端**，
 插件自己**不持有任何 webhook**。
 
-**状态：已实现，尚未发布到 npm。** 代码完整，且与它所替代的本机 live 插件逐项对平；缺的只是
-注册表那一环（见[仍未实测](#仍未实测)）。
+**状态：已发布到 npm（v0.1.0）。** 代码完整，且与它所替代的本机 live 插件逐项对平；现在可以
+直接从注册表安装（见[仍未实测](#仍未实测)）。
 
 | | |
 |---|---|
@@ -49,10 +49,10 @@ feishu-notify-cli doctor       # 接线自检 + 逐 channel 真发一张
 
 ## 安装
 
-### 包发布之前
+### 从克隆手动接线
 
-`feishu-notify-cli install --target opencode` 会把本包声明进 `opencode.json`，但在包名**还解析
-不出来**时它会**拒绝写入**（先跑 `npm view` 确认，免得给你留一份指向空气的配置）。发布前请手动接线：
+`feishu-notify-cli install --target opencode` 会把本包声明进 `opencode.json`，包名能解析出来
+就会写入（先跑 `npm view` 确认，免得给你留一份指向空气的配置）。也可以从克隆里手动接线：
 
 ```sh
 # 在本仓库的克隆里
@@ -65,7 +65,7 @@ opencode 会自动加载 `~/.config/opencode/plugins/*.ts`，这种模式下不�
 部署脚本只把上一版备份成 `feishu-notify.ts.pre-package.bak` **一次**，之后绝不覆盖它 ——
 它得一直是一个真实可用的回滚点。
 
-### 发布之后
+### 通过 CLI 安装器
 
 ```sh
 feishu-notify-cli install --target opencode --channel opencode --dry-run   # 先看确切改动
@@ -199,7 +199,7 @@ node scripts/deploy.mjs --check   # 在 packages/opencode 里：exit 0 = live �
 | 项 | 原因 |
 |---|---|
 | `permission.asked` 真的到达 | 在 2.0.32 上从未观测到该事件。处理器已实现、结构上说得通，但**时机未实测** |
-| "声明这个包就会自动安装"的端到端 | 需要包已发布。语法与归一化已实测，注册表那一环没有 |
+| "声明这个包就会自动安装"的端到端 | 语法与归一化已实测，注册表那一环没有（包现已发布，可以端到端验证） |
 | Windows | 发送端是 bash + `curl` + `python3`，不在范围内 |
 
 ## 测试

@@ -4,15 +4,15 @@
 **仓库里不含任何 webhook**：地址在发送时才从用户自己的配置解析；解析不出来就 `exit 2` 并给引导语，
 **绝不**把消息投到别人的机器人上。
 
-本仓库是**单仓三包**（npm workspaces）：CLI 已实现，两个适配器（opencode、DSH）都已实现、等发布。
+本仓库是**单仓三包**（npm workspaces）：CLI 已实现，两个适配器（opencode、DSH）都已实现、并已发布到 npm（v0.1.0）。
 
 ## 包一览
 
 | 包 | 路径 | 状态 | 是什么 |
 |---|---|---|---|
-| `feishu-notify-cli` | [`packages/cli`](./packages/cli) | ✅ **已实现**（尚未发布到 npm） | 内核：`feishu-notify`（bash 发送端）+ `feishu-notify-cli`（Node 配置/诊断/`install` CLI），两个 bin 同包发布 |
-| `opencode-feishu-notify` | [`packages/opencode`](./packages/opencode) | ✅ **已实现**（尚未发布到 npm） | opencode v2 插件：回合结束/授权/表单时出卡片，用 `--channel opencode` 路由。**不持有 webhook** —— 调发送端，地址由你的配置解析 |
-| `dsh-feishu-notify` | [`packages/dsh`](./packages/dsh) | ✅ **已实现**（尚未发布到 npm） | DSH（Cordis）bundle：回合结束/审批/**需要你回答与计划待批**时出卡片，用 `--channel dsh` 路由。同样不持有 webhook |
+| `feishu-notify-cli` | [`packages/cli`](./packages/cli) | ✅ **已发布到 npm**（v0.1.0） | 内核：`feishu-notify`（bash 发送端）+ `feishu-notify-cli`（Node 配置/诊断/`install` CLI），两个 bin 同包发布 |
+| `opencode-feishu-notify` | [`packages/opencode`](./packages/opencode) | ✅ **已发布到 npm**（v0.1.0） | opencode v2 插件：回合结束/授权/表单时出卡片，用 `--channel opencode` 路由。**不持有 webhook** —— 调发送端，地址由你的配置解析 |
+| `dsh-feishu-notify` | [`packages/dsh`](./packages/dsh) | ✅ **已发布到 npm**（v0.1.0） | DSH（Cordis）bundle：回合结束/审批/**需要你回答与计划待批**时出卡片，用 `--channel dsh` 路由。同样不持有 webhook |
 
 图例：✅ 已实现且实测 · ⚠ 假设 / 未直接观测 · ✖ 未实现。逐项验证状态（含"哪些还没在真实 DSH 里观测到"）
 见 [`packages/dsh/README.md`](./packages/dsh/README.md#verified-vs-not)。
@@ -32,13 +32,13 @@
     │   ├── lib/                 #   解析、命令、发送、接线自检、安装目标、密钥闸门
     │   ├── tests/               #   断言测试 + 逐字节黄金样例
     │   └── README.md            #   本包的完整文档
-    ├── opencode/                # 已实现的适配器（尚未发布）
+    ├── opencode/                # 已实现的适配器（已发布到 npm）
     │   ├── package.json         #   name: opencode-feishu-notify，main → src/feishu-notify.ts
     │   ├── src/feishu-notify.ts #   插件本体（无 webhook：只传 --channel，由 CLI 解析地址）
     │   ├── scripts/deploy.mjs   #   复制到 live 目录；--check 是漂移闸门
     │   ├── tests/               #   模块 / channel / 发送端解析 / 路由 / live 哈希
     │   └── README.md            #   安装、事件时机、channel 语义、排障
-    └── dsh/                     # 已实现的 DSH/Cordis 适配器（尚未发布）
+    └── dsh/                     # 已实现的 DSH/Cordis 适配器（已发布到 npm）
         ├── package.json         #   name: dsh-feishu-notify，dsh.bundle.patch → cordis.patch.yml
         ├── cordis.patch.yml     #   bundle 层：一行 `insert` 声明插件（channel: dsh）
         ├── lib/index.js         #   回合结束/审批/工具失败/需要你回答（无 webhook）
@@ -61,13 +61,13 @@ npm i -g feishu-notify-cli            # 两个命令进同一个 bin 目录
 feishu-notify-cli init                # 问你要 webhook，先发一张测试卡片验证
 feishu-notify-cli doctor              # 接线自检（发送端/解析器/Node，含悬空符号链接）+ 逐 channel 实测
 feishu-notify-cli install --dry-run   # 看将要写进 agent 配置的改动（零写入）
-feishu-notify-cli install             # 确认后接线：claude-code 可写；opencode 待其包发布后可声明；dsh 有前置条件
+feishu-notify-cli install             # 确认后接线：claude-code 可写；opencode 可声明（包已发布）；dsh 有前置条件
 ```
 
 想让某个目标固定用某台机器人就加 `--channel <name>`：Claude Code 会附加到 hook 命令上，
 opencode 会写进 `options.channel`。不加则各调用方走你配置里的 `activeChannel`。
 
-从克隆的仓库里跑（包发布前也就是这个状态）：
+从克隆的仓库里跑（同样可行）：
 
 ```sh
 node packages/cli/bin/feishu-notify-cli init

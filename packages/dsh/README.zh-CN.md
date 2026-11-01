@@ -4,7 +4,7 @@
 发送走共用的 `feishu-notify` CLI —— 地址由它从**你自己的配置**解析：本包**不含任何地址**，
 也从不自己发 HTTP。
 
-> **状态：已实现，尚未发布。** 下文所有结论都在本机 DSH **0.2.0-rc.2** 上实测。`packages/dsh`
+> **状态：已发布到 npm（v0.1.0）。** 下文所有结论都在本机 DSH **0.2.0-rc.2** 上实测。`packages/dsh`
 > 曾被 link 进一个一次性 profile（**现已删除**），回合结束那条路径（卡片到达、`--channel dsh`
 > 解析、卸载）已端到端验证；`user-questions/request` waterfall 是按随包发布的 `.d.ts` 实现的、
 > 由 stub 测试覆盖，但**尚未在真实 DSH 里观测到它触发**（见文末「实测 vs 未实测」）。
@@ -112,7 +112,7 @@ feishu-notify-cli doctor --channel dsh
 > 点名提示（`⚠ … 指向同一机器人`）。指纹相同 ⇒ 同一个机器人；提示只是事后提醒，不影响退出码 ——
 > 有意让多个 channel 复用一个机器人是合法选择。
 
-## 安装（发布之后）
+## 安装
 
 ```bash
 dsh plugin --profile <name> pnpm add dsh-feishu-notify
@@ -162,5 +162,5 @@ npm test -w packages/dsh
 | `user-questions/request` 映射 + fire-and-forget / `next()` 契约 | ⚠ 仅 stub 测试 —— **从未在真实 DSH 里观测到触发**（没有把真实的 `ask_user_question` 跑过 live profile） |
 | root context 的 listener 被 scope 过滤的 waterfall 放行 | ⚠ 读的是 `dsh-scope` 源码（未打标 ⇒ 全局），未在运行时观测 |
 | `approval/asked`、`tool/result`、另外四种 `turn/end` 原因 | ⚠ 仅 stub 测试 |
-| 从 npm 注册表安装（`dsh plugin … add dsh-feishu-notify`） | ⚠ 包尚未发布 |
+| 从 npm 注册表安装（`dsh plugin … add dsh-feishu-notify`） | ✅ 包已发布到 npm（v0.1.0）；`dsh plugin --profile <name> pnpm add dsh-feishu-notify` 可安装 |
 | 0.2.0-rc.2 以外的 DSH 版本 | ⚠ 未测试 |

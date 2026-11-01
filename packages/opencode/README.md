@@ -3,8 +3,8 @@
 An [opencode](https://opencode.ai) v2 plugin that turns agent events into Feishu (Lark) cards —
 **by calling the `feishu-notify` sender**, never by holding a webhook itself.
 
-**Status: implemented, not on npm yet.** The code is complete and measured against the live
-plugin it replaces; what is missing is the registry round trip (see
+**Status: published to npm (v0.1.0).** The code is complete and measured against the live plugin it
+replaces; the package is now installable from the registry (see
 [Not measured yet](#not-measured-yet)).
 
 | | |
@@ -50,11 +50,11 @@ npm prefix is elsewhere notifications simply never arrived — visible only in a
 
 ## Install
 
-### Before the package is published
+### Manual wiring from a clone
 
-`feishu-notify-cli install --target opencode` declares this package in `opencode.json`, but it
-**refuses while the name is unresolvable** (it checks with `npm view` first, so you never end up
-with a config that points at nothing). Until the package is on npm, wire it by hand:
+`feishu-notify-cli install --target opencode` declares this package in `opencode.json`, and writes
+it once the name resolves (it checks with `npm view` first, so you never end up with a config that
+points at nothing). You can also wire it by hand from a clone:
 
 ```sh
 # from a clone of this repo
@@ -67,7 +67,7 @@ opencode auto-loads `~/.config/opencode/plugins/*.ts`, so no `opencode.json` cha
 this mode. The deploy script backs the previous file up as `feishu-notify.ts.pre-package.bak`
 **once** and never overwrites that backup, so it stays a real rollback point.
 
-### After publication
+### Install via the CLI installer
 
 ```sh
 feishu-notify-cli install --target opencode --channel opencode --dry-run   # show the exact change
@@ -211,7 +211,7 @@ Stated as unverified rather than implied:
 | Item | Why |
 |---|---|
 | `permission.asked` actually arriving | No such event has ever been observed on 2.0.32. The handler is implemented and structurally plausible; the timing is **not** verified |
-| "declaring the package installs it" end to end | Needs a published package. The syntax and normalization are measured; the registry round trip is not |
+| "declaring the package installs it" end to end | The syntax and normalization are measured; the registry round trip is not (the package is now published, so it can be verified end-to-end) |
 | Windows | The sender is bash + `curl` + `python3`. Out of scope |
 
 ## Tests

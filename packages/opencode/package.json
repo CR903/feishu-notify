@@ -1,6 +1,6 @@
 {
   "name": "opencode-feishu-notify",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "OpenCode plugin: Feishu (Lark) notification cards when a turn ends or the agent needs you — sends through the feishu-notify CLI, which resolves the webhook from your own config (no address is ever compiled in)",
   "license": "MIT",

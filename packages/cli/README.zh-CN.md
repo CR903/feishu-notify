@@ -13,14 +13,15 @@ webhook 在**发送前**按下表解析；一处都取不到就 `exit 2` 并给�
 
 > **本包在单仓中的位置。** `feishu-notify-cli` 是 `feishu-notify` 单仓里的 `packages/cli`
 > workspace（仓库级 README：[`../../README.zh-CN.md`](../../README.zh-CN.md)）。本文里以
-> `bin/`、`lib/`、`tests/` 开头的路径都相对**本包**。另两个适配器 workspace 都已实现、都尚未发布：
+> `bin/`、`lib/`、`tests/` 开头的路径都相对**本包**。另两个适配器 workspace 都已实现、都已发布到 npm（v0.1.0）：
 > `packages/opencode`（插件，见 [`../opencode/README.zh-CN.md`](../opencode/README.zh-CN.md)）与
 > `packages/dsh`（DSH/Cordis bundle，见 [`../dsh/README.zh-CN.md`](../dsh/README.zh-CN.md)）。
 
-> **尚未发布到 npm。** 本次提交时 `GET https://registry.npmjs.org/feishu-notify-cli` 返回 404 —— 发布由父任务复审后统一进行。在此之前请从仓库里跑：
+> **已发布到 npm（v0.1.0）。** `feishu-notify-cli` 已发布 —— 可以全局安装，开发时也可以从仓库里跑：
 >
 > ```sh
-> node bin/feishu-notify-cli init      # 在 packages/cli 下执行；而不是 npx feishu-notify-cli init
+> npm i -g feishu-notify-cli            # 标准安装
+> node bin/feishu-notify-cli init      # 在 packages/cli 下执行，例如开发时
 > ```
 
 ## 它做什么
@@ -43,10 +44,10 @@ webhook 在**发送前**按下表解析；一处都取不到就 `exit 2` 并给�
 - **不做卡片交互。** 按钮、回调、审批不在范围内；卡片是单向的。
 - **不做聚合、静音、定时。** 一个事件进，一张卡片出。
 - **不静默降级。** 缺配置就是报错（`exit 2`），这是刻意的 —— 见[安全](#安全)。代价是配置坏了会停通知，而不是悄悄发歪。
-- **`install` 还没覆盖全部目标。** `claude-code` 端到端可写；`opencode` 与 `dsh` 都卡在各自的包尚未发布 —— 两者都已实现，但写盘前会用 `npm view` 预检包能否解析，解析不出来就拒绝写入，并打印"包一发布就会改成什么"的预览（`dsh` 另有 `--dsh-dev-dir` 本地联调口）。见[一键接线](#3-一键接线)。
+- **`install` 还没覆盖全部目标。** `claude-code` 端到端可写；`opencode` 与 `dsh` 的包都已发布，写盘前会用 `npm view` 预检包能否解析，预检通过即可写入；解析不出来仍会拒绝写入，并打印"解析通过后会改成什么"的预览（`dsh` 另有 `--dsh-dev-dir` 本地联调口）。见[一键接线](#3-一键接线)。
 - **`install` 不代跑包管理器。** DSH 那条它只写 profile 清单，并把 `dsh plugin … pnpm install` 命令打出来让你自己执行；不自己跑 pnpm/npm 安装，`--dry-run` 的"零写入"才是它真能担保的性质。
 - **不支持 Windows。** 发送端是 bash + `curl` + `python3`；CLI 侧是 Node、可移植，发送端不是。
-- **不代你发布适配器包。** opencode / DSH 两个适配器都已实现，但都还没上 npm；`install` 只负责在你自己的配置里声明它们，发布由父任务统一进行。
+- **不代你发布适配器包。** opencode / DSH 两个适配器都已发布到 npm（v0.1.0）；`install` 只负责在你自己的配置里声明它们。
 
 ## 环境要求
 
@@ -141,8 +142,8 @@ feishu-notify-cli install --yes         # 非交互
 | 目标 | 探测 | 动作 | 状态 |
 |---|---|---|---|
 | `claude-code` | `~/.claude/settings.json` | 合并两组 hook：`Notification`（matcher `idle_prompt`）→ `feishu-notify --idle`，以及无 matcher 的 `Stop` → `feishu-notify --done`。保留用户既有 hook；按 command 字符串去重，并额外认"同事件同工具"，避免一个事件发两张卡 | ✅ 会写 |
-| `opencode` | `~/.config/opencode/opencode.json` | 往 `plugins` 追加 `opencode-feishu-notify`（默认对象形式 `{"package": …}`，或 `--opencode-form bare`）。带 `--channel <name>` 时条目会写成 `options: { "channel": "<name>" }`，让插件的路由意图明确落地、不被默认值覆盖 | ⛔ 包**解析不出来时拒绝写入**（写前用 `npm view` 实测），绝不留下半截配置 |
-| `dsh` | `~/.dsh/profiles/*/package.json` | 往 `dependencies` **与** `dsh.profile.bundles` 加这个包 | ⛔ 包**解析不出来时拒绝写入**（适配器已实现、尚未发布；写前用 `npm view` 实测 —— bundle 引用了装不上的包会让 DSH 起不来，比"没装"更糟）。它会打印确切的改动与 `dsh plugin … pnpm install` 命令；`--dsh-dev-dir <path>` 可切到 `link:<绝对路径>` 的联调接线（写本地路径，不走注册表预检） |
+| `opencode` | `~/.config/opencode/opencode.json` | 往 `plugins` 追加 `opencode-feishu-notify`（默认对象形式 `{"package": …}`，或 `--opencode-form bare`）。带 `--channel <name>` 时条目会写成 `options: { "channel": "<name>" }`，让插件的路由意图明确落地、不被默认值覆盖 | ✅ 包已发布 —— `npm view` 预检通过即可写入（解析不出来仍会拒绝），绝不留下半截配置 |
+| `dsh` | `~/.dsh/profiles/*/package.json` | 往 `dependencies` **与** `dsh.profile.bundles` 加这个包 | ✅ 包已发布 —— `npm view` 预检通过即可写入（适配器已发布到 npm；写前用 `npm view` 实测 —— bundle 引用了装不上的包会让 DSH 起不来，比"没装"更糟）。它会打印确切的改动与 `dsh plugin … pnpm install` 命令；`--dsh-dev-dir <path>` 可切到 `link:<绝对路径>` 的联调接线（写本地路径，不走注册表预检） |
 
 以下保证都由 `tests/install.test.mjs` 断言：
 
@@ -182,13 +183,13 @@ feishu-notify-cli install --yes         # 非交互
 
 说明：hook handler 走 shell 形式（`sh -c`），所以 `~` 会被展开、`--idle` / `--done` 能拿到 stdin 上的 hook JSON。想把这条目标固定到某个机器人就加 `--channel <name>`（例如 `--channel claude`）；不加则用 `activeChannel`。`timeout` 的数值是从本机可用配置里原样抄来的 —— Claude Code 现行文档把这个字段描述为**秒**，请按你的版本再核对一次。`install` 写的是**裸命令名**而不是 `~/.local/bin/…`，这样 hook 走 `PATH`、也不会因为仓库改名而悬空。
 
-**opencode** —— opencode 会自动加载 `~/.config/opencode/{plugin,plugins}/*.{ts,js}`（本机 runtime 2.0.32 实测），也会读 `opencode.json` 里的 `plugins` 数组。发通知的插件已在 `packages/opencode` 实现（[`opencode-feishu-notify`](../opencode/README.zh-CN.md)），但**尚未发布**；它做的事就是调用发送端、让 CLI 去解析 channel：
+**opencode** —— opencode 会自动加载 `~/.config/opencode/{plugin,plugins}/*.{ts,js}`（本机 runtime 2.0.32 实测），也会读 `opencode.json` 里的 `plugins` 数组。发通知的插件已在 `packages/opencode` 实现（[`opencode-feishu-notify`](../opencode/README.zh-CN.md)），且**已发布到 npm（v0.1.0）**；它做的事就是调用发送端、让 CLI 去解析 channel：
 
 ```sh
 feishu-notify --channel opencode --source opencode --title "…" --file /tmp/msg.txt
 ```
 
-包发布之后 `install` 会替你声明它（见[一键接线](#3-一键接线)）；在那之前它会拒绝写入。**不要**拷贝作者本机的 `feishu-notify.ts`：那个文件里还带着个人 webhook。见[未实现 / Roadmap](#未实现--roadmap)。
+`install` 会替你声明它（见[一键接线](#3-一键接线)）：`npm view` 预检通过即写入，解析不出来仍会拒绝。**不要**拷贝作者本机的 `feishu-notify.ts`：那个文件里还带着个人 webhook。见[Roadmap](#roadmap)。
 
 ## 配置参考
 
@@ -218,7 +219,7 @@ channel 名必须匹配 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`。`channel remove` �
 ### `footer`（卡片底部）
 
 `footer` 是可选的顶层字符串 —— 每张卡片底部紧跟时间戳的那段文字。它存在的原因很具体：
-当初的私有脚本把公司名硬编码在那里，而公司/个人标识不该被烧进一个要发布的工具。
+当初的私有脚本把公司名硬编码在那里，而公司/个人标识不该被烧进一个对外发布的工具。
 
 | 取值 | 卡片底部显示 |
 |---|---|
@@ -344,8 +345,8 @@ note 里的内容是 [`footer`](#footer卡片底部) 配置值（这里取的是
 |---|---|---|
 | 终端 / 任意脚本 | 直接调用 | ✅ 发送端已实测：5 组逐字节黄金样例、退出码矩阵、解析优先级 |
 | Claude Code | `~/.claude/settings.json` 的 hooks（`Notification`/`idle_prompt` → `--idle`，`Stop` → `--done`） | ✅ hooks 条目已装上、配置形状已核对。⚠ **hook 进程自身的 `PATH` 未直接观测** —— 发送端的解析器/解释器发现顺序是靠在测试里清洗 `PATH`（含一个假的 v14 `node`，用于证明它会被跳过）来等价验证的，见 `tests/sender-compat.test.mjs` |
-| opencode（v2，runtime 2.0.32） | `~/.config/opencode/plugins/` 下的插件 | ✅ 插件侧端到端实测：通知时机、标题判定、指标行、跨实例去重（细节见下）。✖ 打包产物 `opencode-feishu-notify` 尚未发布，第三方暂无安装路径 |
-| DSH（DeepSeek Harness） | profile bundle | ✅ 适配器已实现并实测：事件映射、审批、**需要你回答（阻塞 waterfall）**、工具失败、channel 路由（纯映射 + fake ctx harness + 真实 spawn 的 stub 可执行文件）。✖ 打包产物 `dsh-feishu-notify` 尚未发布，第三方暂无安装路径 |
+| opencode（v2，runtime 2.0.32） | `~/.config/opencode/plugins/` 下的插件 | ✅ 插件侧端到端实测：通知时机、标题判定、指标行、跨实例去重（细节见下）。✅ 已发布到 npm（v0.1.0），`opencode plugin add opencode-feishu-notify` 可安装 |
+| DSH（DeepSeek Harness） | profile bundle | ✅ 适配器已实现并实测：事件映射、审批、**需要你回答（阻塞 waterfall）**、工具失败、channel 路由（纯映射 + fake ctx harness + 真实 spawn 的 stub 可执行文件）。✅ 已发布到 npm（v0.1.0），`dsh plugin --profile <name> pnpm add dsh-feishu-notify` 可安装 |
 
 图例：✅ 已实测 · ⚠ 推断 / 未直接观测 · ✖ 未实现。
 
@@ -454,19 +455,19 @@ shasum -a 256 ~/.local/bin/feishu-notify    # 期望 0b788cf3…c52f1ebde（那�
 
 `install` 会为自己碰过的每个文件打印回滚指令（一行 `cp -p <file>.bak.<时间戳> <file>`）。每个目标都只往它列出的文件里**追加**内容，所以恢复备份同时也撤掉了后续运行加进去的东西。
 
-## 未实现 / Roadmap
+## Roadmap
 
 | 项 | 状态 |
 |---|---|
 | `install` → `claude-code` | ✅ 会写（合并两组 hook、按 command 去重、保留用户既有 hook） |
-| `install` → `opencode` | ⛔ `opencode-feishu-notify` 解析不出来时拒绝写入（写前用 `npm view` 实测）；`--no-verify` 可强制 |
-| `install` → `dsh` | ⛔ 包解析不出来时拒绝写入（写前用 `npm view` 实测；适配器已实现、尚未发布）；`--dsh-dev-dir` 打开 `link:<绝对路径>` 的联调接线（不走注册表预检），`--no-verify` 可强制 |
+| `install` → `opencode` | ✅ 会写 —— 包已发布，`npm view` 预检通过；仅当名字解析不出来时才拒绝；`--no-verify` 可强制 |
+| `install` → `dsh` | ✅ 会写 —— 包已发布，`npm view` 预检通过；仅当名字解析不出来时才拒绝；`--dsh-dev-dir` 打开 `link:<绝对路径>` 的联调接线（不走注册表预检），`--no-verify` 可强制 |
 | `install` 代跑包管理器 | 刻意不做（见"它不做什么"）；只把确切的 `dsh plugin … pnpm install` 命令打印出来 |
-| `opencode-feishu-notify`（[`packages/opencode`](../opencode)） | ✅ **已实现**，未发布。插件行为、channel 降级、发送端解析均已实测；注册表往返要等发布 |
-| opencode 插件**声明语法** | ✅ **已实测**（2.0.32 的编译产物）：`plugins` 类型是 `Array<string \| {package, options}>`，两种写法归一化成同一个 target；裸字符串以 `-` 开头表示**移除**；非绝对路径的 target 由 opencode 自己的包管理器安装/解析，失败只会把插件标记为 failed，**不会**让 opencode 起不来。**尚未**实测的是注册表往返 —— 那需要包已发布 |
-| `dsh-feishu-notify`（[`packages/dsh`](../dsh)） | ✅ **已实现**，未发布。事件映射、**需要你回答的阻塞 waterfall**、工具失败与 channel 路由均已实测；注册表往返要等发布 |
+| `opencode-feishu-notify`（[`packages/opencode`](../opencode)） | ✅ **已发布到 npm（v0.1.0）**。插件行为、channel 降级、发送端解析均已实测 |
+| opencode 插件**声明语法** | ✅ **已实测**（2.0.32 的编译产物）：`plugins` 类型是 `Array<string \| {package, options}>`，两种写法归一化成同一个 target；裸字符串以 `-` 开头表示**移除**；非绝对路径的 target 由 opencode 自己的包管理器安装/解析，失败只会把插件标记为 failed，**不会**让 opencode 起不来。**尚未**实测的是注册表往返 —— 包现已发布，可以端到端验证 |
+| `dsh-feishu-notify`（[`packages/dsh`](../dsh)） | ✅ **已发布到 npm（v0.1.0）**。事件映射、**需要你回答的阻塞 waterfall**、工具失败与 channel 路由均已实测 |
 | Windows | 不在范围：发送端是 bash。移植需要照 Node CLI 的做法补一套黄金样例 |
-| 发布到 npm（三个包） | 未做 —— 刻意留给父任务 |
+| 发布到 npm（三个包） | 已完成 —— 三个包均已发布到 npm（v0.1.0） |
 | `permission.asked` 这条通知时机 | 至今仍未观测到它到达 |
 
 ## 许可证

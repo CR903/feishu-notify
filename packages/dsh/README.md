@@ -5,7 +5,7 @@ needs an **answer** from you (including plan review).
 Sending goes through the shared `feishu-notify` CLI, which resolves the webhook from **your own
 config** — this package ships **no address** and never talks HTTP itself.
 
-> **Status: implemented, not yet published.** Everything below is measured against DSH
+> **Status: published to npm (v0.1.0).** Everything below is measured against DSH
 > **0.2.0-rc.2** on this machine. `packages/dsh` was linked into a throwaway profile (**since
 > deleted**) and the turn-end path (card arrival, `--channel dsh` resolution, uninstall) was verified
 > end-to-end; the
@@ -118,7 +118,7 @@ restart of its config — it only ever passes `--channel dsh`.
 > (`⚠ … 指向同一机器人`). Equal fingerprints ⇒ same bot; the call-out is an advisory, not a
 > failure — reusing one bot for several channels is a legitimate choice.
 
-## Install (once published)
+## Install
 
 ```bash
 dsh plugin --profile <name> pnpm add dsh-feishu-notify
@@ -170,5 +170,5 @@ plus a real `spawn` against a stub executable that proves the argv contract.
 | `user-questions/request` mapping + fire-and-forget / `next()` contract | ⚠ stub tests only — **never observed firing in a live DSH** (no real `ask_user_question` was driven through a live profile) |
 | Root-context listener admitted by the scoped waterfall | ⚠ read from `dsh-scope` source (untagged ⇒ global), not observed at runtime |
 | `approval/asked`, `tool/result`, the other four `turn/end` reason kinds | ⚠ stub tests only |
-| Install from the npm registry (`dsh plugin … add dsh-feishu-notify`) | ⚠ package is not published yet |
+| Install from the npm registry (`dsh plugin … add dsh-feishu-notify`) | ✅ package is published on npm (v0.1.0); `dsh plugin --profile <name> pnpm add dsh-feishu-notify` installs it |
 | DSH versions other than 0.2.0-rc.2 | ⚠ not tested |

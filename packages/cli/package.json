@@ -1,6 +1,6 @@
 {
   "name": "feishu-notify-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Feishu (Lark) bot notifications for local AI agents: multi-channel webhook config, sender CLI, and one-command installer (OpenCode / Claude Code / DSH)",
   "license": "MIT",
