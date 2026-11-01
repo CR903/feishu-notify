@@ -16,6 +16,7 @@
  */
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -582,6 +583,47 @@ describe("doctor", () => {
 		assert.match(brokenResult.stderr, /未自动覆盖/);
 		assert.equal(readFileSync(brokenConfig, "utf8"), broken);
 		assert.equal(readCalls().length, 0);
+	});
+
+	it("两条 channel 指向同一 webhook → 指纹相同的警告 + --json duplicates（掩码照旧）", () => {
+		// dsh 换机器人那节的现状（dsh 与 default 同一机器人）就是这条的真实形态
+		const config = tmpConfig("doctor-same-bot");
+		resetLog();
+		const s = runCli(["init", "--non-interactive", "--webhook", A, "--channel", "default", "--no-verify"], { env: envFor({ config }) });
+		assert.equal(s.status, 0, `${s.stdout}\n${s.stderr}`);
+		runCli(["channel", "add", "opencode", "--webhook", A, "--no-verify"], { env: envFor({ config }) });
+		resetLog();
+
+		const result = runCli(["doctor"], { env: envFor({ config }) });
+		assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+		// 同机器人提示：点了名、给了指纹、不拦退出码（有意复用是合法选择）
+		assert.match(result.stdout, /⚠ default、opencode 指向同一机器人/);
+		assert.match(result.stdout, /卡片都会发到同一个群/);
+		assert.match(result.stdout, /2\/2 通/);
+		assertMaskedOutput(result);
+
+		const json = runCli(["doctor", "--json"], { env: envFor({ config }) });
+		assert.equal(json.status, 0);
+		const parsed = JSON.parse(json.stdout);
+		const fps = parsed.channels.map((entry) => entry.fingerprint);
+		assert.ok(fps.every((fp) => /^[0-9a-f]{8}$/.test(fp)), `指纹应是 8 位十六进制：${fps}`);
+		assert.equal(new Set(fps).size, 1, "同一 webhook 的指纹应相同");
+		assert.deepEqual(parsed.duplicates, [{ fingerprint: fps[0], channels: ["default", "opencode"] }]);
+		assertMaskedOutput(json);
+	});
+
+	it("不同 webhook → 无重复告警，--json fingerprints 各不相同", () => {
+		const config = seeded("doctor-distinct");
+		const json = runCli(["doctor", "--json"], { env: envFor({ config }) });
+		assert.equal(json.status, 0, `${json.stdout}\n${json.stderr}`);
+		const parsed = JSON.parse(json.stdout);
+		const fps = parsed.channels.map((entry) => entry.fingerprint);
+		assert.deepEqual(parsed.duplicates, []);
+		assert.equal(new Set(fps).size, fps.length, "不同 webhook 的指纹应各不相同");
+		// 别名指纹应与本地手算一致（README 换机器人一节的口径）：sha256(url) 前 8 位
+		const sha8 = (url) => createHash("sha256").update(url, "utf8").digest("hex").slice(0, 8);
+		assert.equal(fps[0], sha8(A));
+		assert.equal(fps[1], sha8(B));
 	});
 
 	it("env FEISHU_NOTIFY_WEBHOOK 存在时明确告警它会覆盖 activeChannel（掩码）", () => {

@@ -120,7 +120,10 @@ feishu-notify-cli doctor
    `lstat` 分类，所以**悬空符号链接**会被报成"悬空符号链接"而不是"不存在"，并直接打印修法
    （`rm` 掉坏链接 + `npm i -g feishu-notify-cli`）。
 2. **逐 channel 可达性** —— 真发卡片，打印 `结论：N/M 通`；有通道不通就 `exit 1`。卡片带的是
-   **当前生效的 footer**，所以你在测试卡上看到的外观就是真实通知的外观。
+   **当前生效的 footer**，所以你在测试卡上看到的外观就是真实通知的外观。每行还带该 channel 的
+   **指纹**（webhook 的 sha256 前 8 位十六进制），指向**同一个机器人**的 channel 会被点名提示 ——
+   掩码恰好打掉了能区分机器人的 token，光看地址输出两者完全无法区分。这是事后提示而非定论：
+   有意让多个 channel 复用一个机器人是合法选择（见 dsh 适配器 README 的"哪个机器人"一节）。
 
 接线自检**刻意不改变退出码**：hook 跑在 agent 的环境里（`PATH`/`HOME` 都不同），所以这里的 ✗ 是
 强力的可执行警告，而不是"通道坏了"的定论。`doctor --json` 里的 `wiring` 给人/脚本用。
@@ -264,7 +267,7 @@ channel 名必须匹配 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`。`channel remove` �
 | `init [--non-interactive] (--webhook <u> \| --webhook-stdin) [--channel <n>] [--label <t>] [--footer <t>] [--config <p>] [--no-verify] [--force]` | 写配置；先发卡验证，卡片失败就**什么都不写** |
 | `channel list [--json]` / `add <n> …` / `remove <n> [--force]` / `set-active <n>` | 管理 channel |
 | `footer [--config <p>] [--json]` | 把生效的卡片 footer 打印到 stdout（`source=…` 走 stderr）。配置不可用时 `exit 2` —— 发送端据此回退到中性默认 |
-| `doctor [--channel <n>] [--json]` | 接线自检（发送端 → 解析器 → Node，含悬空符号链接）+ 逐 channel 实测可达性 |
+| `doctor [--channel <n>] [--json]` | 接线自检（发送端 → 解析器 → Node，含悬空符号链接）+ 逐 channel 实测可达性、指纹、同机器人点名 |
 | `install [--dry-run] [--yes] [--target <t>…\|--skip <t>…] [--channel <n>] [--opencode-form <f>] [--dsh-dev-dir <p>] [--no-verify]` | 探测本机已装的 agent 并幂等接线；`--dry-run` 只打印计划、零写入 |
 | `help`、`version` | — |
 

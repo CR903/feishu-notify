@@ -93,8 +93,9 @@ Every card class is on by default (turn end, approvals, user questions / plan re
 
 `channel: dsh` is a **name**, never an address — the CLI resolves it from *your* config. Today
 `dsh` and `default` point at **the same bot** on the machine this was built on (verified: their
-webhook fingerprints match, `opencode`'s does not — see the snippet below). That is a deliberate
-current choice, not a defect: one bot, per-adapter channel names, so the wiring is already in place.
+webhook fingerprints match, `opencode`'s does not — every `doctor` result row prints one). That is a
+deliberate current choice, not a defect: one bot, per-adapter channel names, so the wiring is already
+in place.
 
 To give DSH its own bot later, only the CLI config changes — nothing in this plugin:
 
@@ -104,32 +105,19 @@ To give DSH its own bot later, only the CLI config changes — nothing in this p
 printf '%s' 'https://open.feishu.cn/open-apis/bot/v2/hook/…' \
   | feishu-notify-cli channel add dsh --webhook-stdin --force
 
-# 2. verify reachability + see the effective wiring (also prints each channel's masked address):
+# 2. verify reachability + see the effective wiring (prints masked address + fingerprint):
 feishu-notify-cli doctor --channel dsh
 ```
 
 `--force` is required because the channel already exists. After the swap the plugin needs no
 restart of its config — it only ever passes `--channel dsh`.
 
-> **Checking whether two channels share a bot.** `doctor` (and `channel list`) print a **masked**
-> address: the unique part of a Feishu webhook is the *token* (`…/bot/v2/hook/<token>`), and that is
-> redacted — so two channels on one bot look exactly like two channels on different bots, and no
-> same-address call-out exists today. If you want to compare without printing the address, fingerprint
-> it locally (Node is already a dependency of this project; output is 8 hex chars + the channel name):
->
-> ```bash
-> node -e '
-> const fs = require("fs"), crypto = require("crypto");
-> const file = process.env.HOME + "/.config/feishu-notify/config.json";
-> const c = JSON.parse(fs.readFileSync(file, "utf8"));
-> for (const [name, entry] of Object.entries(c.channels ?? {})) {
->   console.log(crypto.createHash("sha256").update(String(entry.webhook)).digest("hex").slice(0, 8), name);
-> }
-> '
-> ```
->
-> Equal fingerprints ⇒ same bot. Adding that call-out inside `doctor` would be a change in
-> `packages/cli`, which is outside this adapter's scope.
+> **Checking whether two channels share a bot.** A masked address cannot answer that: the unique
+> part of a Feishu webhook is the *token* (`…/bot/v2/hook/<token>`), and that is exactly what gets
+> redacted. `doctor` closes the gap — each result row prints a **fingerprint** (sha256 of the
+> webhook, first 8 hex chars), and channels sharing one bot are called out
+> (`⚠ … 指向同一机器人`). Equal fingerprints ⇒ same bot; the call-out is an advisory, not a
+> failure — reusing one bot for several channels is a legitimate choice.
 
 ## Install (once published)
 

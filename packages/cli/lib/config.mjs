@@ -15,6 +15,7 @@
  *          可用 FEISHU_NOTIFY_CONFIG 覆盖路径（测试/隔离必需）。
  */
 
+import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -140,6 +141,27 @@ export function maskWebhook(value) {
 	const segments = parsed.pathname.split("/").filter(Boolean);
 	if (segments.length === 0) return `${head}/<REDACTED>`;
 	return `${head}/${segments.slice(0, -1).join("/")}${segments.length > 1 ? "/" : ""}<REDACTED>`;
+}
+
+/**
+ * 指纹：webhook 的 sha256 前 8 位十六进制（sha8），用于"两个 channel 是否指向同一机器人"的
+ * 相等性比较 —— maskWebhook 恰好把能区分机器人的那段（token）打掉，指纹补上这个盲区。
+ *
+ * 安全性：token 本身熵足够（飞书的是长随机串），截断的哈希不降低猜测难度 —— 它只能回答
+ * "这两个地址是否相同"，不泄露地址。输出绝不含 webhook 明文，与 maskWebhook 同一条铁律。
+ * 与本机一直沿用的 sha8 指纹口径一致（README 的 dsh 换机器人一节、secret-scan 的 live 交叉比对）。
+ *
+ * 不可用（非字符串 / 空 / 非 URL）返回 null，由调用侧决定怎么展示 —— 与 maskWebhook 的
+ * "<非 URL 值>" 不回归报一致，指纹负责比较，不该它负责报格式错误。
+ */
+export function webhookFingerprint(value) {
+	if (typeof value !== "string" || value.trim() === "") return null;
+	try {
+		new URL(value.trim());
+	} catch {
+		return null;
+	}
+	return createHash("sha256").update(value.trim(), "utf8").digest("hex").slice(0, 8);
 }
 
 // ---------------------------------------------------------------- footer（R9）

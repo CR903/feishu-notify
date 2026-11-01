@@ -35,6 +35,7 @@ import {
 	upsertChannel,
 	validateFooter,
 	validateWebhook,
+	webhookFingerprint,
 	writeConfig,
 } from "./config.mjs";
 import { CommandError } from "./errors.mjs";
@@ -646,6 +647,8 @@ export async function commandDoctor(argv, { env: baseEnv = process.env, io: rawI
 			name,
 			ok: result.ok,
 			webhook: maskWebhook(webhook),
+			// 指纹只用于跨 channel 相等性比较（同一机器人 → 同一指纹），不泄露地址。
+			fingerprint: webhookFingerprint(webhook),
 			httpCode: result.httpCode,
 			bodyCode: result.bodyCode ?? null,
 			detail: result.ok ? result.message : `${result.message}${result.body ? `：${shortBody(result.body)}` : ""}`,
@@ -654,7 +657,28 @@ export async function commandDoctor(argv, { env: baseEnv = process.env, io: rawI
 		if (!options.json) {
 			const mark = result.ok ? "✓" : "✗";
 			const tail = result.ok ? `${result.message}，${result.elapsedMs}ms` : `${result.message}${result.body ? `：${shortBody(result.body)}` : ""}`;
-			say(io, `  ${mark} ${name.padEnd(12)} ${tail}`);
+			const fp = webhookFingerprint(webhook);
+			say(io, `  ${mark} ${name.padEnd(12)} ${tail}${fp ? ` · 指纹 ${fp}` : ""}`);
+		}
+	}
+
+	// 同机器人检测（指纹相同 ⇒ webhook 相同）：maskWebhook 打掉的是 token，光看输出两个
+	// channel 指向同一机器人完全看不出来。这里是事后提示不拦主流程 —— 有意复用同一个
+	// 机器人是合法选择（README 有专节）；退出码仍只由发卡结果决定。
+	const byFingerprint = new Map();
+	for (const entry of report.channels) {
+		if (!entry.fingerprint) continue;
+		const names = byFingerprint.get(entry.fingerprint) ?? [];
+		names.push(entry.name);
+		byFingerprint.set(entry.fingerprint, names);
+	}
+	report.duplicates = [...byFingerprint]
+		.filter(([, names]) => names.length > 1)
+		.map(([fingerprint, channels]) => ({ fingerprint, channels }));
+
+	if (!options.json) {
+		for (const dup of report.duplicates) {
+			say(io, `  ⚠ ${dup.channels.join("、")} 指向同一机器人（指纹 ${dup.fingerprint}）：卡片都会发到同一个群。若有意复用可忽略；要分开请用 channel add 换新地址`);
 		}
 	}
 

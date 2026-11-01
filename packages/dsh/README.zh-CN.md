@@ -89,8 +89,8 @@ DSH 里唯一真正表示「harness 需要你给个答案」的钩子，是 Cord
 
 `channel: dsh` 是一个**名字**，永远不是地址 —— 由 CLI 从*你的*配置解析。在构建本包的机器上，
 今天 `dsh` 与 `default` 指向**同一个机器人**（已核验：两者的 webhook 指纹相同，`opencode` 的
-不同 —— 见下面的片段）。这是当前刻意的选择，不是缺陷：一个机器人、每个适配器各有自己的
-channel 名字，所以接线已经是通的。
+不同 —— `doctor` 的每行结果都会带指纹，直接可见）。这是当前刻意的选择，不是缺陷：一个机器人、
+每个适配器各有自己的 channel 名字，所以接线已经是通的。
 
 将来要给 DSH 单独一个机器人，只改 CLI 配置就行 —— 这个插件一行都不用动：
 
@@ -100,31 +100,18 @@ channel 名字，所以接线已经是通的。
 printf '%s' 'https://open.feishu.cn/open-apis/bot/v2/hook/…' \
   | feishu-notify-cli channel add dsh --webhook-stdin --force
 
-# 2. 验证可达性 + 看生效接线（同时打印每个 channel 的掩码地址）：
+# 2. 验证可达性 + 看生效接线（同时打印每个 channel 的掩码地址与指纹）：
 feishu-notify-cli doctor --channel dsh
 ```
 
 `--force` 是必需的，因为该 channel 已经存在。换完之后插件侧不需要重启什么配置 ——
 它永远只传 `--channel dsh`。
 
-> **怎么判断两个 channel 是不是同一个机器人。** `doctor`（以及 `channel list`）打印的是
-> **掩码**地址：飞书 webhook 唯一的部分是 *token*（`…/bot/v2/hook/<token>`），而它被涂掉了 ——
-> 所以"两个 channel 同一个机器人"和"两个 channel 不同机器人"看起来一模一样，
-> 目前也还没有任何同地址提示。想在不打印地址的前提下比对，就在本地算指纹
-> （Node 本来就是本项目的依赖；输出是 8 位十六进制 + channel 名）：
->
-> ```bash
-> node -e '
-> const fs = require("fs"), crypto = require("crypto");
-> const file = process.env.HOME + "/.config/feishu-notify/config.json";
-> const c = JSON.parse(fs.readFileSync(file, "utf8"));
-> for (const [name, entry] of Object.entries(c.channels ?? {})) {
->   console.log(crypto.createHash("sha256").update(String(entry.webhook)).digest("hex").slice(0, 8), name);
-> }
-> '
-> ```
->
-> 指纹相同 ⇒ 同一个机器人。把这个提示加进 `doctor` 属于改 `packages/cli`，不在本适配器范围内。
+> **怎么判断两个 channel 是不是同一个机器人。** 掩码地址答不了这个问题：飞书 webhook 唯一的
+> 部分是 *token*（`…/bot/v2/hook/<token>`），而它恰恰被涂掉了。`doctor` 补上了这个盲区 ——
+> 每行结果都带**指纹**（webhook 的 sha256 前 8 位十六进制），指向同一机器人的 channel 会被
+> 点名提示（`⚠ … 指向同一机器人`）。指纹相同 ⇒ 同一个机器人；提示只是事后提醒，不影响退出码 ——
+> 有意让多个 channel 复用一个机器人是合法选择。
 
 ## 安装（发布之后）
 

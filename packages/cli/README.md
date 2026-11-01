@@ -124,7 +124,11 @@ feishu-notify-cli doctor
    as "missing", and prints the fix (`rm` the broken link, `npm i -g feishu-notify-cli`).
 2. **Per-channel reachability** — sends one real card per channel and prints `结论：N/M 通`; exits `1`
    if a channel is unreachable. The cards carry the **effective footer**, so what you see on the test
-   card is exactly what your notifications will look like.
+   card is exactly what your notifications will look like. Each row also prints the channel's
+   **fingerprint** (sha256 of the webhook, first 8 hex chars), and channels sharing one bot are
+   called out: the masked address hides exactly the token that differs, so two channels on one bot
+   are otherwise indistinguishable. It is a post-hoc notice, not a verdict — reusing one bot for
+   several channels is legitimate (see the DSH adapter's "which bot" section).
 
 The wiring verdict deliberately does **not** change the exit code: hooks run in the agent's
 environment (different `PATH`, different `HOME`), so a ✗ here is a strong, actionable warning rather
@@ -273,7 +277,7 @@ Every source is validated the same way: `https` only, and for `*.feishu.cn` / `*
 | `init [--non-interactive] (--webhook <u> \| --webhook-stdin) [--channel <n>] [--label <t>] [--footer <t>] [--config <p>] [--no-verify] [--force]` | Write the config; verifies with a test card first and writes **nothing** if the card fails |
 | `channel list [--json]` / `add <n> …` / `remove <n> [--force]` / `set-active <n>` | Manage channels |
 | `footer [--config <p>] [--json]` | Print the effective card footer on stdout (`source=…` on stderr). Exit `2` if the config is unusable — the sender falls back to the neutral default |
-| `doctor [--channel <n>] [--json]` | Wiring self-check (sender → resolver → Node, dangling symlinks included) + per-channel reachability test |
+| `doctor [--channel <n>] [--json]` | Wiring self-check (sender → resolver → Node, dangling symlinks included) + per-channel reachability test, fingerprints, shared-bot call-out |
 | `install [--dry-run] [--yes] [--target <t>…\|--skip <t>…] [--channel <n>] [--opencode-form <f>] [--dsh-dev-dir <p>] [--no-verify]` | Probe the agents on this machine and wire them in idempotently; `--dry-run` prints the plan and writes nothing |
 | `help`, `version` | — |
 
